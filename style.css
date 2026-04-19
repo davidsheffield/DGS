@@ -1,0 +1,31 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #fff;
+}
+
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+#stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 80px;
+}
+
+#stage img {
+  display: block;
+  max-width: 45vw;
+  width: auto;
+  image-rendering: -webkit-optimize-contrast;
+}
+
+#stage[data-size="small"]  img { height: 20px; }
+#stage[data-size="medium"] img { height: 40px; }
+#stage[data-size="large"]  img { height: 60px; }
