@@ -1,3 +1,4 @@
 .DS_Store
 Samples/
 votes.jsonl
+.ipynb_checkpoints/

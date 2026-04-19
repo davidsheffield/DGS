@@ -1,0 +1,6 @@
+# server.py uses only the Python standard library.
+# The packages below are needed for analyze.ipynb only.
+jupyter
+numpy
+pandas
+matplotlib

@@ -74,6 +74,24 @@ votes = [json.loads(l) for l in open("votes.jsonl")]
 
 From there, feed the pairs into your favorite ranking method — Elo, Bradley–Terry, TrueSkill, or a simple win-rate sort.
 
+### Analysis notebook
+
+`analyze.ipynb` contains a ready-made analysis of `votes.jsonl`: pair coverage, size distribution, left/right position bias with ±1σ error bars, and Bradley–Terry rankings overall and per size.
+
+Requirements (in addition to Python 3.9+):
+
+```bash
+pip install -r requirements.txt
+```
+
+Run it:
+
+```bash
+jupyter notebook analyze.ipynb
+```
+
+Then *Kernel → Restart & Run All*. The notebook re-reads `votes.jsonl` from the project directory on every run, so re-executing picks up any new votes.
+
 ## Adding or removing images
 
 Drop `.png` files into `Samples/` (or remove them) and restart the server. The image list is captured at startup; the server ignores anything that isn't a `.png` file in that directory.
