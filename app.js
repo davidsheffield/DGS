@@ -71,6 +71,7 @@ async function submitVote(winner) {
 }
 
 document.addEventListener("keydown", (e) => {
+  if (e.repeat) return;
   if (e.key === "ArrowLeft") {
     e.preventDefault();
     submitVote("a");

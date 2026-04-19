@@ -26,6 +26,10 @@ body {
   image-rendering: -webkit-optimize-contrast;
 }
 
-#stage[data-size="small"]  img { height: 20px; }
-#stage[data-size="medium"] img { height: 40px; }
-#stage[data-size="large"]  img { height: 60px; }
+#stage[data-size="20px"] img { height: 20px; }
+#stage[data-size="30px"] img { height: 30px; }
+#stage[data-size="40px"] img { height: 40px; }
+#stage[data-size="50px"] img { height: 50px; }
+#stage[data-size="60px"] img { height: 60px; }
+#stage[data-size="70px"] img { height: 70px; }
+#stage[data-size="80px"] img { height: 80px; }

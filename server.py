@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import random
@@ -13,9 +14,10 @@ SAMPLES_DIR = ROOT / "Samples"
 STATIC_DIR = ROOT
 VOTES_PATH = ROOT / "votes.jsonl"
 
-SIZES = ["small", "medium", "large"]
+SIZES = ["20px", "30px", "40px", "50px", "60px", "70px", "80px"]
 HOST = "127.0.0.1"
 PORT = 8000
+DEBUG = False
 
 IMAGES: list[str] = sorted(
     p.name for p in SAMPLES_DIR.iterdir()
@@ -33,7 +35,8 @@ def append_vote(record: dict) -> None:
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        sys.stderr.write("%s - %s\n" % (self.address_string(), format % args))
+        if DEBUG:
+            sys.stderr.write("%s - %s\n" % (self.address_string(), format % args))
 
     def _send_json(self, status: int, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -134,10 +137,17 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    global DEBUG
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--debug", action="store_true", help="log every request")
+    args = parser.parse_args()
+    DEBUG = args.debug
+
     if len(IMAGES) < 2:
         sys.exit(f"need at least 2 PNGs in {SAMPLES_DIR}, found {len(IMAGES)}")
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"serving on http://{HOST}:{PORT} — {len(IMAGES)} images loaded")
+    mode = " [debug]" if DEBUG else ""
+    print(f"serving on http://{HOST}:{PORT} — {len(IMAGES)} images loaded{mode}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
