@@ -92,6 +92,97 @@ jupyter notebook analyze.ipynb
 
 Then *Kernel → Restart & Run All*. The notebook re-reads `votes.jsonl` from the project directory on every run, so re-executing picks up any new votes.
 
+## Evolving new marks (`genome.py`)
+
+`genome.py` is a self-contained genetic algorithm for the vector marks in
+`Samples/vector_*.svg`. Each of those SVGs is the same drawing — three cubic
+Bézier paths (`GS`, `D`, `DG`) with **fixed topology** (the same number of
+nodes everywhere); only the point locations differ. The module treats each SVG
+as a genome so new marks can be bred from old ones and rendered back to SVG.
+
+Pure standard library (`math` + `random`) — no packages to install — so the
+server can reuse it later.
+
+### Gene encoding
+
+Illustrator writes the paths with a mix of relative (`c`), absolute (`C`) and
+smooth (`s`) commands just to save bytes, which is what makes "are the control
+points relative or absolute?" a confusing question. `genome.py` removes the
+ambiguity by parsing every command into one canonical form and storing:
+
+- **nodes** — on-curve points in **absolute** canvas coordinates (the skeleton);
+- **endpoint handles** — the free handle at the start of each path (and both
+  handles of the single-segment `D`) as a **vector relative to its node**;
+- **interior-node tangents** — at every node where two segments meet, the two
+  handles in the source are exactly antiparallel (the curve is *smooth*). Rather
+  than store two vectors that could drift apart, a node stores **one shared
+  tangent direction + two handle lengths**.
+
+Storing interior nodes as a single direction makes a kink *unrepresentable*:
+both handles are always rebuilt from the same unit vector, so no amount of
+crossover or mutation can introduce the cusps you'd get from perturbing two
+independent handles. A handle stays meaningful regardless of which parent's node
+it ends up attached to, which is what makes recombination behave. Internally a
+genome is a flat, typed gene list (`"node"` / `"free"` / `"tangent"`); breeding
+never touches SVG syntax.
+
+Fixed topology, identical across every sample:
+
+| path | cubic segments | on-curve nodes |
+|------|----------------|----------------|
+| `GS` | 4              | 5              |
+| `DG` | 3              | 4              |
+| `D`  | 1              | 2              |
+
+### Breeding two parents
+
+```python
+import genome as G
+
+pop = G.load_samples()              # one Genome per Samples/vector_*.svg
+child = pop[0].breed(pop[3], rate=0.15)   # crossover, then mutate
+child.save_svg("offspring.svg")     # back to the exact sample template
+```
+
+`breed()` is the single call the selection driver makes once two parents are
+chosen; it is just `crossover()` followed by `mutate()`. Because each parent is
+itself a `Genome` produced the same way, a parent already carries the mixed
+genes of *its* parents — the multi-generation flow comes for free.
+
+**Crossover.** For each component, per path, independently either *inherit* the
+whole point from one random parent (keeps a coherent feature intact) or *blend*
+the two parents with **BLX-α**. BLX-α draws from `[min − α·d, max + α·d]` rather
+than the midpoint, so children can land *outside* the parents' range — that is
+the antidote to "averaging makes every offspring look the same." Knobs:
+`blend_prob` (default `0.5`), `alpha` (default `0.5`).
+
+**Mutation.** `mutate(rate, …)` gives each gene an independent chance of a
+Gaussian nudge. `rate` is the mutation probability (e.g. `0.15` ≈ 15 % of genes
+move). Magnitudes are per gene type: `node_sigma` (default `4` px) moves the
+skeleton, `handle_sigma` (default `6` px) jitters handle lengths, and
+`angle_sigma` (default `0.15` rad) *rotates* an interior node's shared tangent —
+which reshapes the curl while keeping the node smooth. Nodes are clamped to the
+canvas; handles may point outside it but never shrink below a small floor.
+
+The defaults (`blend_prob`, `alpha`, `node_sigma`, `handle_sigma`, `angle_sigma`)
+are reasonable starting points and worth tuning once a generation is rendered.
+
+### Rendering genes to SVG
+
+`Genome.to_svg()` emits the exact sample template (`viewBox 0 0 110 124`,
+stroke `#231f20`, 3 px) using absolute `C` commands — ready to display as-is, no
+rasterization needed. Parsing then re-rendering a sample is lossless, and bred
+offspring always re-parse to valid genomes with the same topology.
+
+### Demo
+
+```bash
+python genome.py        # seeds from Samples/, breeds one child -> offspring_demo.svg
+```
+
+The seed list is just a glob of `Samples/vector_*.svg`, so it works as more of
+the first generation is added.
+
 ## Adding or removing images
 
 Drop `.png` files into `Samples/` (or remove them) and restart the server. The image list is captured at startup; the server ignores anything that isn't a `.png` file in that directory.
