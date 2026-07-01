@@ -4,3 +4,5 @@ votes.jsonl
 .ipynb_checkpoints/
 __pycache__/
 runs/
+pref_data/
+preference_results.html

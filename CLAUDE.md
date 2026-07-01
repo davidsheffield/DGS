@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Three related pieces sharing one `Samples/` directory:
+Four related pieces sharing one `Samples/` directory:
 
 1. **Image Ranker** — a local web app that shows two images side-by-side for pairwise
    comparison (arrow keys to vote), logging results to `votes.jsonl` for later ranking
@@ -15,9 +15,17 @@ Three related pieces sharing one `Samples/` directory:
    web app on port 8001: a grid of candidate marks, click to pick parents, breed the
    next generation. Breeding happens in a PCA "eigenshape" space (`eigen.py`), not on
    `genome.py`'s raw genes.
+4. **Preference learner** (`preference_server.py` / `preference_model.py` /
+   `preference.*`) — a third web app on port 8002: a *forced A/B duel* (like the
+   ranker) between marks generated from the eigenshape space, with a Bayesian
+   *peaked* model that learns which value along each eigen-axis is preferred and
+   actively picks each duel. `preference_display.py` renders the learned
+   preferences. Where the evolver asks "which of these do you like", this asks
+   "what eigen-values do you like".
 
-The ranker and the evolver are separate apps: the ranker serves `.png` files on port
-8000, the evolver serves bred SVGs on port 8001. The eventual intent is to feed
+The ranker, evolver, and preference learner are separate apps: the ranker serves
+`.png` files on port 8000, the evolver serves bred SVGs on port 8001, the preference
+learner serves eigenspace-generated SVGs on port 8002. The eventual intent is to feed
 GA-bred candidates into the same ranking pipeline.
 
 ## Commands
@@ -30,14 +38,22 @@ python genome.py             # GA demo: seeds from Samples/, breeds one child ->
 python3 eigen.py             # eigenshape demo: fit basis, check round-trip, breed -> eigen_demo.svg
 python3 eigen_display.py     # visualize the eigenshape basis -> eigenshapes.html
                              #   -n COMPONENTS / --sigma N / --steps N to tune the walk
-python3 -m unittest test_eigen -v   # tests for eigen.py (round-trip, Jacobi, breeding)
+python3 preference_server.py # forced-A/B preference learner on http://127.0.0.1:8002
+                             #   --data-dir DIR for session.json + votes.jsonl (default pref_data/)
+python3 preference_display.py # visualize learned preferences -> preference_results.html
+                             #   -n COMPONENTS / --steps N / --z-max N / --data-dir DIR
+python3 preference_model.py  # model demo: recover a synthetic peaked preference
+python3 -m unittest test_eigen test_preference -v   # tests for eigen.py + the preference model
 pip install -r requirements.txt   # only needed for analyze.ipynb (jupyter/numpy/pandas/matplotlib)
 jupyter notebook analyze.ipynb    # Bradley-Terry ranking + bias analysis; Kernel -> Restart & Run All
 ```
 
 All the Python (`server.py`, `genome.py`, `eigen.py`, `evolve_server.py`,
-`eigen_display.py`) is pure standard library — no install needed. `Samples/`, `votes.jsonl`, and `runs/` are
-gitignored; they hold real vote/image/run data, not code.
+`eigen_display.py`, `preference_server.py`, `preference_model.py`,
+`preference_display.py`) is pure standard library — no install needed. `Samples/`,
+`votes.jsonl`, `runs/`, and `pref_data/` are gitignored; they hold real
+vote/image/run data, not code. `preference_results.html` is a generated artifact,
+left untracked like `eigenshapes.html`.
 
 ## Image Ranker architecture (`server.py` / `app.js` / `index.html`)
 
@@ -145,3 +161,58 @@ re-appends the parents as `"elite"` candidates), `POST .../restart` (truncate to
 inline each candidate's SVG text (decoded on demand from coefficients — the `gen_NNN/`
 files are for export/browsing, never read back). Writes are atomic
 (`state.json.tmp` + `os.replace`); breeding is serialized per run with a lock.
+
+## Preference model (`preference_model.py`)
+
+Learns, from forced A/B duels, *what value along each eigen-axis is preferred* —
+and that the preference is **peaked** (a sweet spot, worse on either side), so
+votes can drift back and forth near the optimum without a clear winner. Pure
+stdlib, like `eigen.py`.
+
+- **Feature map:** standardize a candidate's PCA coefficients by the basis
+  std (`z_k = c_k / stds_k`) and use a *per-axis quadratic* map
+  `phi(c) = [z_1..z_K, z_1²..z_K²]`. Utility `U = w·phi`, preference
+  `P(a>b) = sigmoid(w·(phi(a)-phi(b)))` (the constant cancels — no intercept).
+  The `z²` terms give each axis an interior optimum `z* = -w_lin/(2 w_quad)`
+  when `w_quad < 0` (a peak); `w_quad ≥ 0` = *edge* preference, flagged as such.
+- **Posterior:** Bayesian logistic regression, Gaussian prior `N(0, prior_var·I)`,
+  fitted by Newton/IRLS **with Armijo backtracking** — the line search is load-
+  bearing: once duels concentrate near the optimum the data becomes near-separable
+  and an undamped Newton step diverges (weights blow up to ±hundreds). The Laplace
+  covariance `N(w_MAP, H^-1)` (Cholesky of the Hessian) is used for Thompson draws.
+- **Active `next_duel`:** dueling Thompson sampling — show the argmax candidate of
+  two independent posterior draws from a pool of coherent eigenspace shapes.
+  `explore_prob()` anneals in early exploration (`max(0.25, exp(-n/50))`): while the
+  posterior is flat a Thompson-argmax lands on the sampling-box corners and never
+  reveals the interior peak, so early duels must be random-interior to learn the
+  curvature. A recency buffer forbids showing anything within `d_min` of the last
+  ~12 marks, so a shape only returns after a palette cleanser.
+
+## Preference learner app (`preference_server.py` / `preference.{html,js,css}`)
+
+Same stdlib-server pattern as `server.py` (ThreadingHTTPServer, 127.0.0.1,
+`--debug`, port 8002). A **session** lives in `--data-dir` (default `pref_data/`):
+`session.json` pins the fitted `PCABasis` (so logged coefficients decode
+identically forever) and `votes.jsonl` is the append-only log. On startup a
+compatible session is resumed and the model rebuilt from its votes
+(`observe_many`); a layout-version mismatch exits rather than mis-decoding.
+
+Endpoints: `GET /api/status` (sizes, vote count, `n_components`), `GET
+/api/next?size=<bucket>` (issue a duel), `POST /api/vote`
+(`{duel_id, winner:"a"|"b"|"tie", size}` → log it, `model.observe`, and return the
+**next** duel in the same response, like `app.js`'s advance-after-vote). Issued
+duels are held server-side in `DUELS` keyed by `duel_id` (coeffs logged
+authoritatively; votes validated against issued duels, mirroring `server.py`
+validating filenames). `size` is display-only (a `--h` CSS var scales the inline
+SVG), fixed per session but selectable, and logged with each vote. `winner:"tie"`
+(Down arrow) feeds the model as `y=0.5`. One global model + lock.
+
+## Preference display (`preference_display.py`)
+
+Like `eigen_display.py` but for *preferences*: reads `pref_data/session.json` +
+`votes.jsonl`, refits `PreferenceModel`, writes a self-contained
+`preference_results.html` — a header pairing the population **mean** mark with the
+**preferred** mark (model optimum decoded back to a drawing), then one row per
+eigen-axis (the mark stepped across it, cells tinted + barred by learned utility,
+the preferred `z*` outlined), sorted by how strongly the votes constrain each axis.
+Generated artifact, left untracked like `eigenshapes.html`.

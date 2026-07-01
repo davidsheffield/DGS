@@ -258,6 +258,88 @@ via `POST /api/runs/load {"path": …}`.
 
 Tests: `python3 -m unittest test_eigen -v`.
 
+## Learning what you prefer (`preference_server.py` + `preference_model.py`)
+
+A third local web app. Where the evolver asks *"which of these marks do you
+like"*, this asks *"what values in the eigenshape space do you like"* — using
+the forced side-by-side comparison of the image ranker, but on marks generated
+from the eigenspace rather than fixed files.
+
+```bash
+python3 preference_server.py     # then open http://127.0.0.1:8002
+```
+
+Pure standard library. Options: `--port`, `--debug`, `--samples DIR`,
+`--data-dir DIR` (where the session and log live, default `pref_data/`),
+`--var-keep`.
+
+### Using the app
+
+Two marks appear side-by-side, generated from the eigenshape space.
+
+- Press **`←`** if you prefer the **left** mark.
+- Press **`→`** if you prefer the **right** mark.
+- Press **`↓`** if they're **too close** to call (recorded as a tie).
+- The next comparison appears immediately.
+
+Pick a **display size** from the menu; unlike the ranker (which randomizes size
+per pair), the scale here is **fixed** until you change it, so you rank one scale
+at a time. It's display-only and logged with every vote, so you can later rank a
+different scale or check for scale-dependent taste.
+
+Your preference doesn't have to be consistent — it's fine (and expected) to
+go back and forth near a shape you like. The model treats that as a soft,
+percentage-style preference rather than demanding a clear winner, and it will
+bring similar shapes back around later (never immediately — a few other marks
+come first as a palette cleanser).
+
+### What it's learning
+
+Each comparison is a *duel* between two points in the eigenshape space. The
+model (`preference_model.py`, pure stdlib) learns a **peaked** preference along
+each eigen-axis: not just "more is better" but a **sweet spot** with a preferred
+value that being on either side of is worse. It's a Bayesian logistic model over
+per-axis linear + squared terms, so each axis can report an interior peak (a real
+optimum) or an *edge* preference (taste keeps rising to the bound).
+
+Because it's Bayesian, it **chooses the next duel for you** (dueling Thompson
+sampling): early comparisons roam the space to map out your taste, later ones
+concentrate near the current best guess so you're refining the shapes you
+actually like. You never have to decide how many candidates to look at — every
+round is just one A/B choice.
+
+Everything is recorded for analysis. A **session** lives in `pref_data/`:
+`session.json` pins the PCA basis (so logged points always decode to the same
+drawings, even if `Samples/` changes later) and `votes.jsonl` is the append-only
+log. Stop and resume any time — on restart the model is rebuilt from the log.
+
+### Seeing the results
+
+```bash
+python3 preference_display.py       # writes preference_results.html
+```
+
+Open `preference_results.html` in a browser. At the top it pairs the population
+**mean** mark with the **preferred** mark (the model's overall optimum, decoded
+back to a drawing). Below, each row is one eigen-axis: the mark stepped across
+that axis, every cell tinted and barred by how much you preferred it, and the
+learned sweet spot **z\*** outlined — labeled **peak** (an interior optimum) or
+**edge**. Rows are sorted so the axes your votes most strongly pin down come
+first. Options: `-n/--components`, `--steps`, `--z-max`, `--data-dir`, `-o/--out`.
+
+### Vote log format
+
+`pref_data/votes.jsonl` — one JSON object per line, append-only:
+
+```json
+{"ts":"2026-07-01T14:32:30Z","session":"312d…","duel_id":"a1b2…","a_coeffs":[…],"b_coeffs":[…],"size":"40px","winner":"a","n_components":21}
+```
+
+`a_coeffs` / `b_coeffs` are the two marks' PCA coefficient vectors, so the log is
+self-contained given the session's basis. `winner` is `"a"`, `"b"`, or `"tie"`.
+
+Tests: `python3 -m unittest test_preference -v`.
+
 ## Adding or removing images
 
 Drop `.png` files into `Samples/` (or remove them) and restart the server. The image list is captured at startup; the server ignores anything that isn't a `.png` file in that directory.

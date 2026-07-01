@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Eigenshape Preference</title>
+  <link rel="stylesheet" href="/static/preference.css">
+</head>
+<body>
+  <header id="bar">
+    <label class="ctl">size
+      <select id="size"></select>
+    </label>
+    <span id="count"></span>
+    <span id="hint"><b>&larr;</b> prefer left &nbsp;·&nbsp; <b>&rarr;</b> prefer right
+      &nbsp;·&nbsp; <b>&darr;</b> too close</span>
+  </header>
+  <div id="stage" data-size="40px">
+    <div class="mark" id="mark-a"></div>
+    <div class="mark" id="mark-b"></div>
+  </div>
+  <script src="/static/preference.js"></script>
+</body>
+</html>

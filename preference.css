@@ -1,0 +1,52 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #fff;
+  font: 13px/1.4 -apple-system, Segoe UI, Roboto, sans-serif;
+  color: #231f20;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+#bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 8px 14px;
+  border-bottom: 1px solid #eee;
+  color: #666;
+}
+
+#bar .ctl { color: #333; }
+#bar select { font: inherit; margin-left: 4px; }
+#count { font-variant-numeric: tabular-nums; }
+#hint { margin-left: auto; color: #999; }
+#hint b { color: #555; }
+
+/* --h is the chosen display height in px; the mark box keeps the mark's aspect
+   ratio (viewBox 110 x 124) and the inline SVG fills it, preserving shape. */
+#stage {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 80px;
+  --h: 40px;
+}
+
+.mark {
+  height: var(--h);
+  width: calc(var(--h) * 110 / 124);
+}
+
+.mark svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
