@@ -28,13 +28,15 @@ python3 evolve_server.py     # run the interactive evolver on http://127.0.0.1:8
                              #   --runs-dir DIR to store runs somewhere else (default runs/)
 python genome.py             # GA demo: seeds from Samples/, breeds one child -> offspring_demo.svg
 python3 eigen.py             # eigenshape demo: fit basis, check round-trip, breed -> eigen_demo.svg
+python3 eigen_display.py     # visualize the eigenshape basis -> eigenshapes.html
+                             #   -n COMPONENTS / --sigma N / --steps N to tune the walk
 python3 -m unittest test_eigen -v   # tests for eigen.py (round-trip, Jacobi, breeding)
 pip install -r requirements.txt   # only needed for analyze.ipynb (jupyter/numpy/pandas/matplotlib)
 jupyter notebook analyze.ipynb    # Bradley-Terry ranking + bias analysis; Kernel -> Restart & Run All
 ```
 
-All the Python (`server.py`, `genome.py`, `eigen.py`, `evolve_server.py`) is pure
-standard library — no install needed. `Samples/`, `votes.jsonl`, and `runs/` are
+All the Python (`server.py`, `genome.py`, `eigen.py`, `evolve_server.py`,
+`eigen_display.py`) is pure standard library — no install needed. `Samples/`, `votes.jsonl`, and `runs/` are
 gitignored; they hold real vote/image/run data, not code.
 
 ## Image Ranker architecture (`server.py` / `app.js` / `index.html`)
@@ -111,6 +113,18 @@ correlations *between* points and can produce shapes that don't read as the mark
 - `unflatten()` clamps nodes to the canvas and handle lengths to `MIN_HANDLE` — seed
   nodes reach the canvas edge, so it clamps to the full canvas, *not* the margin-3
   clamp `genome.mutate` uses.
+
+## Eigenshape display (`eigen_display.py`)
+
+Renders what the PCA axes *mean* geometrically. `PCABasis.fit()` gives numbers; this
+writes a self-contained `eigenshapes.html` where each row is one principal component:
+the mark decoded at the population **mean** and stepped ±`--sigma` std-devs along that
+single axis (`decode()` with a coefficient vector that's zero except one entry), so a
+row isolates that eigenvector's deformation. Blue→grey→red colors the walk, an overlay
+column superimposes it, and each row is labeled with the component's variance share and
+σ. Refits from `Samples/` on each run (like creating a new evolver run), so it reflects
+the current seeds — not any frozen run basis. Output is a generated artifact, left
+untracked like `eigen_demo.svg`.
 
 ## Evolver app (`evolve_server.py` / `evolve.html` / `evolve.js` / `evolve.css`)
 

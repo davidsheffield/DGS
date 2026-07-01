@@ -212,6 +212,24 @@ together, the way they move in actual marks — incoherent shapes are nearly
 unrepresentable. Crossover is per-coefficient inherit-or-BLX-α; mutation is
 Gaussian, scaled by each component's population spread.
 
+### Visualizing the eigenshapes
+
+To *see* what those PCA axes mean geometrically:
+
+```bash
+python3 eigen_display.py            # writes eigenshapes.html
+```
+
+Open `eigenshapes.html` in a browser. Each row is one principal component: the
+mark decoded at the population **mean** and stepped ±2σ along that single axis
+(every other coefficient held at zero), so walking a row shows exactly how that
+eigenvector deforms the drawing. Blue→grey→red colors the −σ→mean→+σ walk, and
+the last column overlays the whole walk so the direction of motion is obvious.
+Each row is labeled with the component's share of variance and its σ; PC1 alone
+typically accounts for about half of it. Options: `-n/--components` (how many
+PCs), `--sigma` (how far to walk), `--steps` (cells per row), `-o/--out`. The
+basis is refit from `Samples/` on each run, so it reflects the current seeds.
+
 ### Using the app
 
 - **Generation 0** is the seed population from `Samples/vector_*.svg`.
