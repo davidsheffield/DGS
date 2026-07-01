@@ -183,6 +183,63 @@ python genome.py        # seeds from Samples/, breeds one child -> offspring_dem
 The seed list is just a glob of `Samples/vector_*.svg`, so it works as more of
 the first generation is added.
 
+## Interactive evolution (`evolve_server.py` + `eigen.py`)
+
+A second local web app that drives the GA interactively: it shows a grid of
+candidate marks, you click the ones you like, and the server breeds the next
+generation from your picks.
+
+```bash
+python3 evolve_server.py     # then open http://127.0.0.1:8001
+```
+
+Also pure standard library. Options: `--port`, `--debug`, `--runs-dir DIR`
+(where runs are stored, default `runs/`), `--samples DIR`, `--var-keep`.
+
+### Why not breed with `genome.py` directly?
+
+`genome.py`'s crossover treats every node/handle as an independent gene.
+Mixing points one at a time destroys the correlations *between* points that
+make the mark read as one drawing, so offspring can come out bizarre.
+
+`eigen.py` fixes this with a PCA **eigenshape** encoding: every genome flattens
+to a 49-number feature vector, and the mean shape + principal components are
+computed across the seed population (pure stdlib — Gram-matrix trick plus a
+Jacobi eigensolver). Breeding then happens on the ~21 PCA *coefficients*
+instead of raw points. Each coefficient is a whole-shape deformation direction
+observed in the real samples, so crossover and mutation can only move points
+together, the way they move in actual marks — incoherent shapes are nearly
+unrepresentable. Crossover is per-coefficient inherit-or-BLX-α; mutation is
+Gaussian, scaled by each component's population spread.
+
+### Using the app
+
+- **Generation 0** is the seed population from `Samples/vector_*.svg`.
+- Click cards to select the parents you want to propagate; the **offspring**
+  number controls how many children are bred (parent pairs are sampled at
+  random from your selection, so a big selection doesn't explode into
+  all-pairings). One selected parent works too — its children are mutants.
+- **keep parents** (elitism, on by default) carries your selected parents into
+  the next generation so favorites can't be lost to one bad batch.
+- **← / →** browse earlier generations read-only (past picks shown in orange);
+  breeding always continues from the latest generation.
+- **New run…** starts a fresh run (recomputes the PCA basis from whatever is
+  in `Samples/` at that moment) and can write it to a custom directory.
+  **Restart** deletes every bred generation of the current run and returns it
+  to generation 0.
+
+### Run storage
+
+Each run lives in `runs/<name>/` (or wherever you pointed it): `state.json`
+holds the settings, every generation's coefficient vectors with parent lineage,
+and the fitted PCA basis itself — so a run resumes and decodes *identically*
+even if `Samples/` gains new files later. Each generation's SVGs are also
+written to `gen_NNN/` for browsing/export. Stop the server any time; reopening
+a run picks up exactly where it left off. A run stored elsewhere can be opened
+via `POST /api/runs/load {"path": …}`.
+
+Tests: `python3 -m unittest test_eigen -v`.
+
 ## Adding or removing images
 
 Drop `.png` files into `Samples/` (or remove them) and restart the server. The image list is captured at startup; the server ignores anything that isn't a `.png` file in that directory.

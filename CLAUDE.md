@@ -4,30 +4,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Two related pieces sharing one `Samples/` directory:
+Three related pieces sharing one `Samples/` directory:
 
 1. **Image Ranker** — a local web app that shows two images side-by-side for pairwise
    comparison (arrow keys to vote), logging results to `votes.jsonl` for later ranking
    (Elo / Bradley–Terry).
-2. **`genome.py`** — a standalone genetic algorithm that breeds new Maker's Mark vector
+2. **`genome.py`** — a standalone genetic encoding that breeds new Maker's Mark vector
    designs (`Samples/vector_*.svg`) by treating each SVG's Bézier paths as a genome.
+3. **Interactive evolver** (`evolve_server.py` / `eigen.py` / `evolve.*`) — a second
+   web app on port 8001: a grid of candidate marks, click to pick parents, breed the
+   next generation. Breeding happens in a PCA "eigenshape" space (`eigen.py`), not on
+   `genome.py`'s raw genes.
 
-The two aren't wired together yet: `genome.py` doesn't call the server, and the server
-only serves `.png` files. The eventual intent is for the server to serve GA-bred
-candidates into the same ranking pipeline.
+The ranker and the evolver are separate apps: the ranker serves `.png` files on port
+8000, the evolver serves bred SVGs on port 8001. The eventual intent is to feed
+GA-bred candidates into the same ranking pipeline.
 
 ## Commands
 
 ```bash
 python3 server.py            # run the ranking server (add --debug to log requests)
+python3 evolve_server.py     # run the interactive evolver on http://127.0.0.1:8001
+                             #   --runs-dir DIR to store runs somewhere else (default runs/)
 python genome.py             # GA demo: seeds from Samples/, breeds one child -> offspring_demo.svg
+python3 eigen.py             # eigenshape demo: fit basis, check round-trip, breed -> eigen_demo.svg
+python3 -m unittest test_eigen -v   # tests for eigen.py (round-trip, Jacobi, breeding)
 pip install -r requirements.txt   # only needed for analyze.ipynb (jupyter/numpy/pandas/matplotlib)
 jupyter notebook analyze.ipynb    # Bradley-Terry ranking + bias analysis; Kernel -> Restart & Run All
 ```
 
-Both `server.py` and `genome.py` are pure standard library — no install needed to run
-either. `Samples/` and `votes.jsonl` are gitignored; they hold real vote/image data,
-not code.
+All the Python (`server.py`, `genome.py`, `eigen.py`, `evolve_server.py`) is pure
+standard library — no install needed. `Samples/`, `votes.jsonl`, and `runs/` are
+gitignored; they hold real vote/image/run data, not code.
 
 ## Image Ranker architecture (`server.py` / `app.js` / `index.html`)
 
@@ -80,3 +88,46 @@ Because a bred `Genome` is structurally identical to a seed `Genome`, it can its
 parent in the next generation — multi-generation breeding requires no special-casing.
 `load_samples()` just globs `Samples/vector_*.svg`, so new seed marks are picked up
 automatically.
+
+## Eigenshape space (`eigen.py`)
+
+`genome.py`'s per-gene crossover mixes points independently, which destroys the
+correlations *between* points and can produce shapes that don't read as the mark.
+`eigen.py` is the fix the evolver actually breeds with:
+
+- `flatten()`/`unflatten()` map a `Genome` to/from a 49-scalar feature vector (nodes,
+  free handles, interior tangents as *angle* + two lengths; layout fixed by
+  `feature_layout()`, `LAYOUT_VERSION` guards persistence compatibility). Angles are
+  unwrapped against a reference so they average linearly, and weighted by mean handle
+  length so a radian is comparable to a pixel in the PCA.
+- `PCABasis.fit()` computes the mean shape + principal components across the seeds
+  using the Gram-matrix trick (n×n instead of 49×49) and a pure-stdlib Jacobi
+  eigensolver (`jacobi_eigh`). With n seeds the basis has ≤ n−1 components; full rank
+  is kept by default so every seed round-trips exactly (`encode()` → `decode()`).
+- Breeding (`breed_coeffs` = `crossover_coeffs` + `mutate_coeffs`) operates on the
+  coefficient vector. Each coefficient is a whole-shape deformation direction observed
+  in the real samples, so offspring stay coherent by construction; mutation is scaled
+  per-component by the population std-dev (`basis.stds`).
+- `unflatten()` clamps nodes to the canvas and handle lengths to `MIN_HANDLE` — seed
+  nodes reach the canvas edge, so it clamps to the full canvas, *not* the margin-3
+  clamp `genome.mutate` uses.
+
+## Evolver app (`evolve_server.py` / `evolve.html` / `evolve.js` / `evolve.css`)
+
+Same stdlib-server pattern as `server.py` (ThreadingHTTPServer, 127.0.0.1, `--debug`).
+A **run** lives in `runs/<name>/` as `state.json` + one `gen_NNN/` SVG dir per
+generation. `state.json` stores settings, every generation's candidates as PCA
+*coefficients* (with parent lineage), and **the fitted `PCABasis` itself** — resuming
+never refits, so a run decodes identically even after `Samples/` changes; a
+layout-version mismatch is rejected with 409 rather than silently mis-decoding.
+
+Endpoints: `GET/POST /api/runs` (list / create — creating refits the basis from the
+current `Samples/`), `GET /api/runs/<name>` (resume latest), `GET .../gen/<g>`
+(read-only history), `POST .../breed` (`{selected, n_offspring, elitism}` — parent
+pairs are sampled randomly from the selection so large selections don't explode into
+all-pairings; one selected parent falls back to mutation-only children; elitism
+re-appends the parents as `"elite"` candidates), `POST .../restart` (truncate to gen 0),
+`POST /api/runs/load` (`{path}`, open a run stored outside `--runs-dir`). Payloads
+inline each candidate's SVG text (decoded on demand from coefficients — the `gen_NNN/`
+files are for export/browsing, never read back). Writes are atomic
+(`state.json.tmp` + `os.replace`); breeding is serialized per run with a lock.
