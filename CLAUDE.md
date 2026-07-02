@@ -38,6 +38,8 @@ python genome.py             # GA demo: seeds from Samples/, breeds one child ->
 python3 eigen.py             # eigenshape demo: fit basis, check round-trip, breed -> eigen_demo.svg
 python3 eigen_display.py     # visualize the eigenshape basis -> eigenshapes.html
                              #   -n COMPONENTS / --sigma N / --steps N to tune the walk
+python3 sample_display.py    # compare seed samples to the mean, by eigen-axis -> sample_eigen.html
+                             #   -n COMPONENTS / --sort distance|file / --max-k N / -o out.html
 python3 preference_server.py # forced-A/B preference learner on http://127.0.0.1:8002
                              #   --data-dir DIR for session.json + votes.jsonl (default pref_data/)
 python3 preference_display.py # visualize learned preferences -> preference_results.html
@@ -49,11 +51,11 @@ jupyter notebook analyze.ipynb    # Bradley-Terry ranking + bias analysis; Kerne
 ```
 
 All the Python (`server.py`, `genome.py`, `eigen.py`, `evolve_server.py`,
-`eigen_display.py`, `preference_server.py`, `preference_model.py`,
+`eigen_display.py`, `sample_display.py`, `preference_server.py`, `preference_model.py`,
 `preference_display.py`) is pure standard library — no install needed. `Samples/`,
 `votes.jsonl`, `runs/`, and `pref_data/` are gitignored; they hold real
 vote/image/run data, not code. `preference_results.html` is a generated artifact,
-left untracked like `eigenshapes.html`.
+left untracked like `eigenshapes.html` and `sample_eigen.html`.
 
 ## Image Ranker architecture (`server.py` / `app.js` / `index.html`)
 
@@ -141,6 +143,39 @@ column superimposes it, and each row is labeled with the component's variance sh
 σ. Refits from `Samples/` on each run (like creating a new evolver run), so it reflects
 the current seeds — not any frozen run basis. Output is a generated artifact, left
 untracked like `eigen_demo.svg`.
+
+## Sample-vs-mean display (`sample_display.py`)
+
+`eigen_display.py` shows what an axis *means* in isolation; this is the reverse view —
+for each real sample in `Samples/`, how far it actually sits from the mean and which
+eigen-axes carry that deviation. `PCABasis.encode()` gives an exact per-axis
+decomposition of a sample's squared distance from the mean (the components are
+orthonormal, so Parseval holds — the z-scores and %-of-deviation figures in the table
+are exact, not approximations), rendered as one heatmap row per sample.
+
+The page is interactive, so a single static render carries several views:
+- **Layout**: a two-column `.layout` — the table on the left, a "big panel" pinned in
+  `.big-col` (`position: sticky`) to its right. Because the sticky element's containing
+  block is that row (bounded by the table's height, not the whole page), it stays in
+  view while you scroll the table but scrolls away normally once you pass it — it
+  doesn't float over the eigenspace section below.
+- **Click a sample's thumbnail/name**: the big panel shows that sample (ink) over the
+  population mean (grey).
+- **Click one of its heatmap cells**: the big panel keeps the *full sample* and shows it
+  with that one component's coefficient zeroed out (`residual_coeffs[k] = 0` before
+  `decode()`) tinted by sign, so the delta between the two layers is exactly what that
+  axis was contributing to this sample.
+- All of this geometry (mean, every sample, every sample × shown-component residual) is
+  precomputed in Python and embedded as one JSON blob; clicks only swap SVG markup in
+  JS, so the page needs no server.
+
+A second section plots samples in eigenspace: pick any two shown components for X/Y,
+and a pure-JS k-means (k-means++ init, 12 seeded restarts, deterministic per axis-pair-
+and-k so replotting is stable) clusters that 2D projection at a user-chosen `k`, colored
+with the dataviz skill's validated categorical palette (`CLUSTER_COLORS`). A knee plot
+(inertia vs. `k`, 1..`--max-k`) recomputes for the same axis pair and marks the selected
+`k`. Clicking a scatter point jumps the big panel to that sample. Generated artifact,
+left untracked like `eigenshapes.html`.
 
 ## Evolver app (`evolve_server.py` / `evolve.html` / `evolve.js` / `evolve.css`)
 
