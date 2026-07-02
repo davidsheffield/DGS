@@ -10,7 +10,7 @@ of motion is visible at a glance.
 
 Pure standard library; writes a single self-contained ``eigenshapes.html``.
 
-    python3 eigen_display.py                 # top 8 PCs, +/-2 std, 5 steps
+    python3 eigen_display.py                 # all PCs, +/-2 std, 5 steps
     python3 eigen_display.py --components 12 --sigma 2.5 --steps 7
     python3 eigen_display.py -o out.html
 """
@@ -161,8 +161,8 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-o", "--out", default="eigenshapes.html",
                     help="output HTML file (default eigenshapes.html)")
-    ap.add_argument("-n", "--components", type=int, default=8,
-                    help="number of top principal components to show")
+    ap.add_argument("-n", "--components", type=int, default=None,
+                    help="number of top principal components to show (default: all)")
     ap.add_argument("--sigma", type=float, default=2.0,
                     help="how many standard deviations to walk each side")
     ap.add_argument("--steps", type=int, default=5,
@@ -171,10 +171,11 @@ def main() -> None:
 
     pop = load_samples()
     basis = PCABasis.fit(pop)
-    doc = build_html(basis, args.components, args.sigma, args.steps)
+    n_components = args.components if args.components is not None else basis.n_components
+    doc = build_html(basis, n_components, args.sigma, args.steps)
     with open(args.out, "w") as fh:
         fh.write(doc)
-    top = min(args.components, basis.n_components)
+    top = min(n_components, basis.n_components)
     print(f"fitted {basis.n_components} components from {basis.n_seeds} seeds; "
           f"wrote top {top} to {args.out}")
 
