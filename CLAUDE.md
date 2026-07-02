@@ -40,6 +40,8 @@ python3 eigen_display.py     # visualize the eigenshape basis -> eigenshapes.htm
                              #   -n COMPONENTS / --sigma N / --steps N to tune the walk
 python3 sample_display.py    # compare seed samples to the mean, by eigen-axis -> sample_eigen.html
                              #   -n COMPONENTS / --sort distance|file / --max-k N / -o out.html
+python3 eigen_explorer.py    # interactive PC-slider tool -> eigen_explorer.html
+                             #   -n COMPONENTS / --z-max N / -o out.html
 python3 preference_server.py # forced-A/B preference learner on http://127.0.0.1:8002
                              #   --data-dir DIR for session.json + votes.jsonl (default pref_data/)
 python3 preference_display.py # visualize learned preferences -> preference_results.html
@@ -51,11 +53,11 @@ jupyter notebook analyze.ipynb    # Bradley-Terry ranking + bias analysis; Kerne
 ```
 
 All the Python (`server.py`, `genome.py`, `eigen.py`, `evolve_server.py`,
-`eigen_display.py`, `sample_display.py`, `preference_server.py`, `preference_model.py`,
-`preference_display.py`) is pure standard library — no install needed. `Samples/`,
-`votes.jsonl`, `runs/`, and `pref_data/` are gitignored; they hold real
-vote/image/run data, not code. `preference_results.html` is a generated artifact,
-left untracked like `eigenshapes.html` and `sample_eigen.html`.
+`eigen_display.py`, `sample_display.py`, `eigen_explorer.py`, `preference_server.py`,
+`preference_model.py`, `preference_display.py`) is pure standard library — no install
+needed. `Samples/`, `votes.jsonl`, `runs/`, and `pref_data/` are gitignored; they hold
+real vote/image/run data, not code. `preference_results.html` is a generated artifact,
+left untracked like `eigenshapes.html`, `sample_eigen.html`, and `eigen_explorer.html`.
 
 ## Image Ranker architecture (`server.py` / `app.js` / `index.html`)
 
@@ -176,6 +178,38 @@ with the dataviz skill's validated categorical palette (`CLUSTER_COLORS`). A kne
 (inertia vs. `k`, 1..`--max-k`) recomputes for the same axis pair and marks the selected
 `k`. Clicking a scatter point jumps the big panel to that sample. Generated artifact,
 left untracked like `eigenshapes.html`.
+
+## Eigenshape explorer (`eigen_explorer.py`)
+
+The hands-on counterpart to `eigen_display.py`: where that shows each axis walked
+in fixed ±σ steps (a contact sheet), this is a *mixing board* — one slider per
+principal component (labeled with its variance share, ranged in std-devs σ), a big
+live preview of the decoded mark, and pixel-size controls. Turn several axes at once
+and the mark responds; all-zero is the population mean. Each slider carries a
+**thumbnail** of what that axis *does* — the mark stepped ±2σ along it and
+superimposed blue→grey→red, the same overlay `eigen_display.py` draws (`axisThumb`
+reuses `_lerp_color`'s exact coefficients) — so the effect is legible before you drag.
+Double-clicking a slider resets that one axis to the mean.
+
+Like the `*_display.py` scripts it writes a **self-contained** HTML with no server:
+`PCABasis.decode` is just `mean + Σ cₖ·componentₖ`, so the fitted basis (mean,
+components, per-feature `weights`, per-component `stds`) is embedded as one JSON blob
+and the browser reproduces the whole pipeline in JS — `decode` → `unflatten` (same
+canvas/`MIN_HANDLE` clamps as `eigen.py`) → `PathGene.to_d` (same Bézier
+reconstruction and coordinate formatting as `genome.py`). The JS decode is
+byte-identical to Python's across the mean, seed round-trips, and random coefficients
+(verified against `eigen.decode`), and the SVG download reproduces `Genome.to_svg`
+exactly. Sliders are in σ units; the coefficient handed to `decode` is `z·stds[k]`,
+matching how `eigen_display.py` walks an axis.
+
+Controls: size buttons resize the big preview (default 480px, the "large display"),
+a fixed strip re-renders the mark at 16–64px to check small-size legibility, a mean
+overlay toggles a faint grey mean behind the shape, and randomize/reset seed or clear
+all axes. **Getting settings out**: a live JSON blob of the slider positions (`z` in
+σ units *and* raw `coeffs`) that round-trips — paste it back and press Apply to
+restore a mark (accepts either `z` or `coeffs`) — plus a one-click SVG download of the
+current shape. Refits from `Samples/` per run; generated artifact, left untracked like
+`eigenshapes.html`.
 
 ## Evolver app (`evolve_server.py` / `evolve.html` / `evolve.js` / `evolve.css`)
 
