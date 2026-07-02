@@ -35,7 +35,8 @@ import html
 import json
 import math
 
-from genome import PATH_ORDER, STROKE_WIDTH, VIEWBOX, load_samples
+from genome import (CANVAS_H, CANVAS_W, MIN_HANDLE, PATH_ORDER, SEGMENTS,
+                    STROKE_WIDTH, VIEWBOX, load_samples)
 from eigen import PCABasis
 from eigen_display import _lerp_color
 
@@ -55,6 +56,10 @@ CLUSTER_COLORS = [
     "#eb6834",  # orange
 ]
 KNEE_COLOR = "#2a78d6"
+
+
+def _round(seq, nd=6):
+    return [round(float(v), nd) for v in seq]
 
 
 def _text_color(hexcolor: str) -> str:
@@ -147,10 +152,19 @@ def build_html(basis: PCABasis, pop: list, n_components: int, sort_mode: str,
             f'{"".join(cells)}</tr>'
         )
         rows_data.append({"name": names[i], "dist": dist, "full": sample_ds,
-                          "comps": comps_data})
+                          "comps": comps_data, "coeffsFull": _round(coeffs)})
 
     var_pct = [basis.eigenvalues[k] / total_var * 100.0 for k in range(n_comp)]
-    viz_data = {"mean": mean_ds, "nComp": n_comp, "varPct": var_pct, "rows": rows_data}
+    viz_data = {
+        "meanDs": mean_ds, "nComp": n_comp, "varPct": var_pct, "rows": rows_data,
+        # Full basis, so cluster centroids (averaged across *all* components, not
+        # just the shown ones) can be decoded to a mark client-side, the same way
+        # eigen_explorer.py's slider preview does.
+        "meanFeat": _round(basis.mean), "weights": _round(basis.weights),
+        "components": [_round(basis.components[k]) for k in range(basis.n_components)],
+        "canvasW": CANVAS_W, "canvasH": CANVAS_H, "minHandle": MIN_HANDLE,
+        "pathOrder": list(PATH_ORDER), "segments": {pid: SEGMENTS[pid] for pid in PATH_ORDER},
+    }
     data_json = json.dumps(viz_data, separators=(",", ":")).replace("</", "<\\/")
     cluster_colors_json = json.dumps(CLUSTER_COLORS)
 
@@ -182,6 +196,22 @@ def build_html(basis: PCABasis, pop: list, n_components: int, sort_mode: str,
       <h3>Knee plot</h3>
       <p class="chart-sub">Inertia vs. cluster count, this axis pair</p>
       <div id="knee"></div>
+    </div>
+    <div class="chart-box centroids-box">
+      <div class="centroid-head">
+        <h3>Cluster centroids</h3>
+        <button type="button" id="btnCentroidMean" class="mean-toggle on">mean</button>
+      </div>
+      <p class="chart-sub">Each cluster's centroid, decoded back to a mark &mdash; the
+      average coefficient vector of its members across all {basis.n_components}
+      components (not just the two plotted above), so it reflects the whole shape,
+      not just this axis pair. Shown separately, then all superimposed. Toggle the
+      grey population-mean backdrop with the button above.</p>
+      <div class="centroid-row" id="centroidRow"></div>
+      <div class="centroid-combined">
+        <div class="centroid-overlay" id="centroidOverlay"></div>
+        <div class="chart-sub" id="centroidOverlaySub">all clusters overlaid on the mean (grey)</div>
+      </div>
     </div>
   </div>
 """
@@ -252,6 +282,22 @@ def build_html(basis: PCABasis, pop: list, n_components: int, sort_mode: str,
   .legend-row {{ display:flex; flex-wrap:wrap; gap:12px; margin-top:10px; font-size:11px; color:#555; }}
   .legend-row .swatch {{ display:inline-block; width:10px; height:10px; border-radius:2px;
                          vertical-align:-1px; margin-right:4px; }}
+  .centroid-head {{ display:flex; align-items:center; justify-content:space-between;
+                    gap:10px; margin-bottom:4px; }}
+  .centroid-head h3 {{ margin:0; }}
+  .mean-toggle {{ font:inherit; font-size:11px; padding:3px 9px; border:1px solid #ccc;
+                  background:#fff; border-radius:12px; color:#666; cursor:pointer; }}
+  .mean-toggle:hover {{ border-color:#999; }}
+  .mean-toggle.on {{ background:var(--ink); color:#fff; border-color:var(--ink); }}
+  .centroid-row {{ display:flex; flex-wrap:wrap; gap:16px; }}
+  .centroid-item {{ text-align:center; }}
+  .centroid-item .mark {{ width:130px; height:148px; }}
+  .centroid-item .clabel {{ display:flex; align-items:center; justify-content:center;
+                            gap:4px; font-size:11px; color:#555; margin-top:3px; }}
+  .centroids-box {{ max-width:460px; }}
+  .centroid-combined {{ display:flex; flex-direction:column; align-items:stretch; gap:6px;
+                        margin-top:16px; padding-top:16px; border-top:1px solid #eee; }}
+  .centroid-overlay .mark {{ width:100%; height:auto; aspect-ratio:110/124; }}
   .axis text {{ font:10px -apple-system,Segoe UI,Roboto,sans-serif; fill:#898781; }}
   .axis text.label {{ font-size:11px; fill:#52514e; }}
   .axis .grid {{ stroke:#e1e0d9; stroke-width:1; }}
@@ -332,7 +378,7 @@ function markSvg(layers) {
 function renderSample(i) {
   const row = DATA.rows[i];
   document.getElementById('bigmark').innerHTML = markSvg([
-    {ds: DATA.mean, color: '#bbbbbb', width: STROKE_WIDTH},
+    {ds: DATA.meanDs, color: '#bbbbbb', width: STROKE_WIDTH},
     {ds: row.full, color: '#231f20', width: STROKE_WIDTH},
   ]);
   document.getElementById('bigcaption').innerHTML =
@@ -364,6 +410,65 @@ document.querySelectorAll('table tbody').forEach(tbody => {
 if (DATA.rows.length) renderSample(0);
 
 if (HAS_CLUSTERS) {
+  // Decode a full coefficient vector to path "d" strings -- ports
+  // eigen.decode + unflatten + genome.PathGene.to_d, same as eigen_explorer.py's
+  // client-side decoder. Used to turn a cluster's averaged coefficient vector
+  // (DATA.rows[i].coeffsFull) back into a drawable centroid mark.
+  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+  function decodePaths(coeffs) {
+    const dim = DATA.meanFeat.length, s = DATA.meanFeat.slice();
+    for (let k = 0; k < coeffs.length; k++) {
+      const c = coeffs[k]; if (!c) continue;
+      const pc = DATA.components[k];
+      for (let j = 0; j < dim; j++) s[j] += c * pc[j];
+    }
+    const feat = new Array(dim);
+    for (let j = 0; j < dim; j++) feat[j] = s[j] / DATA.weights[j];
+
+    let i = 0; const ds = [];
+    for (const pid of DATA.pathOrder) {
+      const nNodes = DATA.segments[pid] + 1;
+      const nodes = [];
+      for (let n = 0; n < nNodes; n++) {
+        nodes.push([clamp(feat[i], 0, DATA.canvasW), clamp(feat[i + 1], 0, DATA.canvasH)]);
+        i += 2;
+      }
+      const startHandle = [feat[i], feat[i + 1]], endHandle = [feat[i + 2], feat[i + 3]];
+      i += 4;
+      const tangents = [];
+      for (let t = 0; t < nNodes - 2; t++) {
+        const theta = feat[i], li = feat[i + 1], lo = feat[i + 2]; i += 3;
+        tangents.push([Math.cos(theta), Math.sin(theta),
+                       Math.max(DATA.minHandle, li), Math.max(DATA.minHandle, lo)]);
+      }
+      ds.push(toD(nodes, startHandle, endHandle, tangents));
+    }
+    return ds;
+  }
+
+  function toD(nodes, startHandle, endHandle, tangents) {
+    const last = nodes.length - 1;
+    const outHandle = (idx) => idx === 0 ? startHandle
+          : [tangents[idx - 1][0] * tangents[idx - 1][3], tangents[idx - 1][1] * tangents[idx - 1][3]];
+    const inHandle = (idx) => {
+      const j = idx + 1;
+      if (j === last) return endHandle;
+      const tg = tangents[j - 1];
+      return [-tg[0] * tg[2], -tg[1] * tg[2]];
+    };
+    const f = (v) => { let x = v.toFixed(2).replace(/\.?0+$/, ''); return x === '-0' || x === '' ? '0' : x; };
+    const p0 = nodes[0];
+    let out = 'M' + f(p0[0]) + ',' + f(p0[1]);
+    for (let seg = 0; seg < last; seg++) {
+      const a = nodes[seg], b = nodes[seg + 1], oh = outHandle(seg), ih = inHandle(seg);
+      const c1 = [a[0] + oh[0], a[1] + oh[1]], c2 = [b[0] + ih[0], b[1] + ih[1]];
+      out += 'C' + f(c1[0]) + ',' + f(c1[1]) + ',' + f(c2[0]) + ',' + f(c2[1])
+           + ',' + f(b[0]) + ',' + f(b[1]);
+    }
+    return out;
+  }
+
   function seededRng(seed) {
     let s = seed >>> 0;
     return function() {
@@ -502,7 +607,64 @@ if (HAS_CLUSTERS) {
     document.getElementById('scatterLegend').innerHTML = legend;
 
     renderKnee(xk, yk, k);
+    renderCentroids(k, assign);
   }
+
+  // Cluster centroid = the mean of members' *full* coefficient vectors (every
+  // component, not just the plotted xk/yk pair), decoded back to a mark -- so
+  // each centroid reflects the whole shape the cluster shares, not just its
+  // position on this one axis pair.
+  function clusterCentroidDs(k, assign) {
+    const nFull = DATA.components.length;
+    const centroids = [];
+    for (let c = 0; c < k; c++) {
+      const members = DATA.rows.filter((_, i) => assign[i] === c);
+      if (!members.length) { centroids.push(null); continue; }
+      const avg = new Array(nFull).fill(0);
+      members.forEach(row => { for (let j = 0; j < nFull; j++) avg[j] += row.coeffsFull[j]; });
+      for (let j = 0; j < nFull; j++) avg[j] /= members.length;
+      centroids.push({ds: decodePaths(avg), n: members.length});
+    }
+    return centroids;
+  }
+
+  let lastCentroids = [];
+  let showCentroidMean = true;
+
+  function renderCentroids(k, assign) {
+    lastCentroids = clusterCentroidDs(k, assign);
+    drawCentroids();
+  }
+
+  function drawCentroids() {
+    const centroids = lastCentroids;
+    const meanDs = DATA.meanDs;
+    const meanLayer = showCentroidMean ? [{ds: meanDs, color: '#bbbbbb', width: STROKE_WIDTH}] : [];
+
+    const row = document.getElementById('centroidRow');
+    row.innerHTML = centroids.map((cen, c) => {
+      if (!cen) return '';
+      const color = CLUSTER_COLORS[c % CLUSTER_COLORS.length];
+      const mark = markSvg([...meanLayer, {ds: cen.ds, color, width: STROKE_WIDTH}]);
+      return `<div class="centroid-item">${mark}` +
+        `<div class="clabel"><span class="swatch" style="background:${color}"></span>` +
+        `Cluster ${c + 1} (n=${cen.n})</div></div>`;
+    }).join('');
+
+    const overlayLayers = [...meanLayer];
+    centroids.forEach((cen, c) => {
+      if (cen) overlayLayers.push({ds: cen.ds, color: CLUSTER_COLORS[c % CLUSTER_COLORS.length], width: STROKE_WIDTH});
+    });
+    document.getElementById('centroidOverlay').innerHTML = markSvg(overlayLayers);
+    document.getElementById('centroidOverlaySub').textContent =
+      showCentroidMean ? 'all clusters overlaid on the mean (grey)' : 'all clusters overlaid';
+  }
+
+  document.getElementById('btnCentroidMean').addEventListener('click', () => {
+    showCentroidMean = !showCentroidMean;
+    document.getElementById('btnCentroidMean').classList.toggle('on', showCentroidMean);
+    drawCentroids();
+  });
 
   const KNEE_W = 340, KNEE_H = 380, KNEE_M = {left: 42, right: 16, top: 16, bottom: 40};
 
