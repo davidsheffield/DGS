@@ -9,14 +9,20 @@ optimum without a clear winner.
 Model
 -----
 A candidate is a coefficient vector ``c`` in an ``eigen.PCABasis`` (length K =
-``basis.n_components``).  Standardize by the per-component population std so a
-unit is comparable across axes::
+``basis.n_components``).  Only the leading ``n_active`` = M axes (the ones with
+the most variance -- ``stds`` is already sorted descending) are *learned and
+actively varied*; tail axes beyond M sit at 0 (the mean) in every generated
+candidate.  Logged votes still carry the full K-length coefficient vector (so
+nothing is lost if M is later raised), but ``phi``/``observe``/``utility``
+silently truncate to the first M entries -- the tail simply doesn't influence
+the fit.  Standardize by the per-component population std so a unit is
+comparable across axes::
 
-    z_k = c_k / stds_k
+    z_k = c_k / stds_k          (k = 0 .. M-1)
 
 and use a **per-axis quadratic** feature map::
 
-    phi(c) = [z_1..z_K, z_1^2 .. z_K^2]            (length 2K)
+    phi(c) = [z_1..z_M, z_1^2 .. z_M^2]            (length 2M)
 
 with utility ``U(c) = w . phi(c)`` and preference
 ``P(a > b) = sigmoid(w . (phi(a) - phi(b)))`` (the constant cancels in the
@@ -31,16 +37,35 @@ Bayesian logistic regression with a Gaussian prior ``w ~ N(0, prior_var * I)``,
 fitted by Newton/IRLS on the per-vote difference vectors; the Laplace
 approximation ``N(w_MAP, H^-1)`` (H = Hessian at the mode) is used for Thompson
 sampling.  Standardized features keep everything O(1) and well-conditioned, and
-2K ~ 40, so a pure-Python Cholesky solve is ample.
+2M is small, so a pure-Python Cholesky solve is ample.
 
-Active sampling
----------------
-``next_duel`` is dueling Thompson sampling: draw two independent weight vectors
-from the posterior and show the argmax candidate of each.  A diffuse posterior
-(early) gives varied, exploratory duels; a sharp one (later) makes both land
-near the optimum, so similar shapes recur -- the intended back-and-forth.  A
-recency buffer forbids showing anything close to the last few marks, so a shape
-only returns after a palette cleanser.
+Active sampling: a hybrid scheduler
+------------------------------------
+Pure dueling-Thompson over the whole box turned out to spend most of its
+budget confirming things already known.  ``next_duel`` instead mixes three
+kinds of question, each answering something the others can't:
+
+* **"axis" (staircase)** -- hold every axis but one at its current best guess
+  and duel two points that straddle the current guess *on the axis whose peak
+  is least certain* (``zstar_stds``, the posterior spread of that axis's
+  learned optimum).  This isolates one axis at a time, the fastest way to
+  pin down its curvature.
+* **"blend"** -- duel two broad, whole-shape candidates built by Dirichlet-
+  blending real seed marks (plus jitter) over the active axes, so votes also
+  cover combinations the axis-by-axis view can't reach.  Chosen by the argmax
+  of two independent posterior draws (dueling Thompson), same idea as before.
+* **"confirm"** -- duel the current believed-best mark against a near
+  neighbour (the mean, a seed, or a jittered variant), to sanity-check
+  convergence.  Available on request (``mode="confirm"``), not part of the
+  random schedule.
+
+``next_duel(rng, mode=None)`` picks "blend" vs. "axis" with an annealed
+probability (``blend_prob``, née ``explore_prob``): early on, with a diffuse
+posterior, broad blend duels teach the model where the interior lives at all;
+once curvature is known, axis duels dominate to sharpen each optimum.  A
+recency buffer (used by "blend") forbids showing anything close to the last
+few marks so a shape only returns after a palette cleanser; "axis"/"confirm"
+duels intentionally reuse the current base point and bypass it.
 
 Pure standard library, like ``genome.py`` / ``eigen.py``.
 """
@@ -50,7 +75,7 @@ from __future__ import annotations
 import math
 import random
 from collections import deque
-from typing import List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 WINNER_Y = {"a": 1.0, "b": 0.0, "tie": 0.5}
 
@@ -117,14 +142,23 @@ def _chol_solve(L: List[List[float]], b: Sequence[float]) -> List[float]:
 # ---------------------------------------------------------------------------
 
 class PreferenceModel:
-    def __init__(self, stds: Sequence[float], *, prior_var: float = 1.0,
+    def __init__(self, stds: Sequence[float], *,
+                 seed_zs: Optional[Sequence[Sequence[float]]] = None,
+                 n_active: Optional[int] = None,
+                 prior_var: float = 1.0,
                  z_max: float = 2.5, pool_size: int = 200,
                  recent: int = 12, d_min: float = 1.5,
                  rng: random.Random | None = None):
         # Guard near-constant axes so z = c/std stays finite.
         self.stds = [s if abs(s) > 1e-9 else 1e-9 for s in stds]
         self.K = len(self.stds)
-        self.D = 2 * self.K
+        # n_active (M): leading axes the model learns/varies; stds is already
+        # variance-sorted descending, so "leading" == "most important".
+        self.M = self.K if n_active is None else max(1, min(n_active, self.K))
+        self.D = 2 * self.M
+        # Standardized (z-unit) seed coefficient vectors, full K-length, used
+        # by "blend" candidates. Kept as given; truncated to M on use.
+        self.seed_zs: List[List[float]] = [list(z) for z in seed_zs] if seed_zs else []
         self.prior_var = prior_var
         self.z_max = z_max
         self.pool_size = pool_size
@@ -141,7 +175,10 @@ class PreferenceModel:
 
     # --- feature map --------------------------------------------------------
     def _z(self, coeffs: Sequence[float]) -> List[float]:
-        return [c / s for c, s in zip(coeffs, self.stds)]
+        """Standardize and truncate to the M active axes. ``coeffs`` may be a
+        full K-length vector (as logged) -- the ``zip`` stops at M, so tail
+        entries are simply dropped, not fit against."""
+        return [c / s for c, s in zip(coeffs, self.stds[:self.M])]
 
     def phi(self, coeffs: Sequence[float]) -> List[float]:
         z = self._z(coeffs)
@@ -152,6 +189,15 @@ class PreferenceModel:
         w = self.w if w is None else w
         ph = self.phi(coeffs)
         return sum(w[j] * ph[j] for j in range(self.D))
+
+    # --- z (active, length M) <-> full K-length coeffs -----------------------
+    def _coeffs_from_z(self, z_active: Sequence[float]) -> List[float]:
+        """Active-axis z-values -> full K-length coefficient vector, tail
+        zero-padded (0 == the mean on axes the model doesn't touch)."""
+        out = [0.0] * self.K
+        for k, z in enumerate(z_active):
+            out[k] = z * self.stds[k]
+        return out
 
     # --- observing votes ----------------------------------------------------
     def _diff(self, a_coeffs, b_coeffs) -> List[float]:
@@ -238,32 +284,72 @@ class PreferenceModel:
         return math.sqrt(sum(v * v for v in m))
 
     # --- what's preferred ---------------------------------------------------
+    def _zstar_for(self, w: Sequence[float], k: int) -> Tuple[float, bool]:
+        """(z*, is_interior_peak) for active axis k under weight vector w."""
+        b = w[k]                         # linear weight
+        a = w[self.M + k]                # quadratic weight
+        if a < -1e-9:                     # concave -> interior peak
+            z = max(-self.z_max, min(self.z_max, -b / (2.0 * a)))
+            return z, True
+        # convex/linear -> best endpoint
+        zp, zm = self.z_max, -self.z_max
+        z = zp if (b * zp + a * zp * zp) >= (b * zm + a * zm * zm) else zm
+        return z, False
+
     def preferred_z(self) -> List[Tuple[float, bool]]:
-        """Per axis: (preferred standardized value z*, is_interior_peak)."""
-        out: List[Tuple[float, bool]] = []
-        for k in range(self.K):
-            b = self.w[k]                    # linear weight
-            a = self.w[self.K + k]           # quadratic weight
-            if a < -1e-9:                    # concave -> interior peak
-                z = max(-self.z_max, min(self.z_max, -b / (2.0 * a)))
-                out.append((z, True))
-            else:                            # convex/linear -> best endpoint
-                zp, zm = self.z_max, -self.z_max
-                z = zp if (b * zp + a * zp * zp) >= (b * zm + a * zm * zm) else zm
-                out.append((z, False))
-        return out
+        """Per active axis: (preferred standardized value z*, is_interior_peak)."""
+        return [self._zstar_for(self.w, k) for k in range(self.M)]
 
     def preferred_coeffs(self) -> List[float]:
-        return [z * self.stds[k] for k, (z, _) in enumerate(self.preferred_z())]
+        """Full K-length coefficient vector at the model's optimum (0 on axes
+        beyond n_active)."""
+        z = [zk for zk, _ in self.preferred_z()]
+        return self._coeffs_from_z(z)
+
+    def best_coeffs(self) -> List[float]:
+        """Full K-length coefficient vector at the model's *current best guess*:
+        peaked axes at their learned z*, axes with no interior peak yet at 0.0
+        (the mean), rather than the +-z_max edge ``preferred_coeffs`` reports
+        for those axes. ``preferred_coeffs`` is meant to describe "the model's
+        optimum" for picking a duel candidate, and pushing a not-yet-curved
+        axis to the sampling boundary is the right move *there* -- it's
+        exploration, keeping that axis in play until votes reveal a peak. For
+        a "what does the mark look like right now" display, that same edge
+        value would misrepresent an artifact of the flat prior as a learned
+        preference; ``best_coeffs`` leaves such axes at the mean instead, so it
+        only shows what the votes have actually pinned down so far."""
+        return self._coeffs_from_z(self._base_z())
+
+    def _base_z(self) -> List[float]:
+        """Active-axis z of the model's current best guess: peaked axes sit at
+        their z*; axes with no interior peak yet sit at 0 (the mean) rather
+        than the +-z_max edge ``preferred_z`` picks for a not-yet-curved axis
+        (that edge is an artifact of a flat prior, not a real preference)."""
+        return [z if is_peak else 0.0 for z, is_peak in self.preferred_z()]
+
+    def zstar_stds(self, n_draws: int = 32) -> List[float]:
+        """Posterior uncertainty of each active axis's z*: draw ``n_draws``
+        weight vectors from the Laplace posterior, compute z* per draw, take
+        the std. Used both for the axis report and to pick which axis the
+        "axis" duel should probe next."""
+        draws = [self.sample_w(self.rng) for _ in range(n_draws)]
+        out = []
+        for k in range(self.M):
+            zs = [self._zstar_for(w, k)[0] for w in draws]
+            mean = sum(zs) / len(zs)
+            var = sum((z - mean) ** 2 for z in zs) / len(zs)
+            out.append(math.sqrt(var))
+        return out
 
     def axis_report(self) -> List[dict]:
-        """One dict per axis for the analysis view, sorted by how strongly the
-        votes constrain it (utility span across the axis)."""
+        """One dict per *active* axis for the analysis view, sorted by how
+        strongly the votes constrain it (utility span across the axis)."""
         pref = self.preferred_z()
+        zstd = self.zstar_stds()
         rows = []
-        for k in range(self.K):
+        for k in range(self.M):
             b = self.w[k]
-            a = self.w[self.K + k]
+            a = self.w[self.M + k]
             us = [b * z + a * z * z
                   for z in (i / 20.0 * self.z_max for i in range(-20, 21))]
             rows.append({
@@ -272,43 +358,20 @@ class PreferenceModel:
                 "peak": pref[k][1],
                 "lin": b, "quad": a,
                 "lin_std": self.weight_std(k),
-                "quad_std": self.weight_std(self.K + k),
+                "quad_std": self.weight_std(self.M + k),
+                "zstar_std": zstd[k],
                 "span": max(us) - min(us),
             })
         rows.sort(key=lambda r: r["span"], reverse=True)
         return rows
 
-    # --- active next-duel (dueling Thompson sampling) -----------------------
+    # --- shared duel-picking machinery ---------------------------------------
     def _zdist(self, c1: Sequence[float], c2: Sequence[float]) -> float:
         return math.sqrt(sum(((x - y) / s) ** 2
                              for x, y, s in zip(c1, c2, self.stds)))
 
     def _too_recent(self, coeffs: Sequence[float]) -> bool:
         return any(self._zdist(coeffs, r) < self.d_min for r in self._recent)
-
-    def _candidate_pool(self, rng: random.Random) -> List[List[float]]:
-        opt = self.preferred_coeffs()
-        opt_active = any(abs(o) > 1e-9 for o in opt)
-        pool: List[List[float]] = []
-        for _ in range(self.pool_size * 12):
-            if len(pool) >= self.pool_size:
-                break
-            if opt_active and pool and rng.random() < 0.25:
-                # revisit the neighbourhood of the current optimum
-                z = [opt[k] / self.stds[k] + rng.gauss(0.0, 0.6)
-                     for k in range(self.K)]
-            else:
-                z = [rng.gauss(0.0, 1.0) for _ in range(self.K)]
-            z = [max(-self.z_max, min(self.z_max, zi)) for zi in z]
-            c = [z[k] * self.stds[k] for k in range(self.K)]
-            if self._too_recent(c):
-                continue
-            pool.append(c)
-        if not pool:                         # recency starved the pool: relax it
-            z = [max(-self.z_max, min(self.z_max, rng.gauss(0.0, 1.0)))
-                 for _ in range(self.K)]
-            pool.append([z[k] * self.stds[k] for k in range(self.K)])
-        return pool
 
     def _argmax(self, pool, w, *, avoid=None, min_dist: float = 0.0):
         best = None
@@ -321,58 +384,167 @@ class PreferenceModel:
                 best_u, best = u, c
         return best
 
-    def explore_prob(self) -> float:
-        """Fraction of duels that should be exploratory, annealed with data.
+    def _dirichlet3(self, rng: random.Random) -> List[float]:
+        """Symmetric Dirichlet(1,1,1) via normalized Exp(1) draws (stdlib-only:
+        that's the standard construction -- a Gamma(1,*) is an Exp, and
+        normalizing i.i.d. Gammas of a shared scale gives a Dirichlet)."""
+        e = [rng.expovariate(1.0) for _ in range(3)]
+        s = sum(e)
+        return [ei / s for ei in e]
 
-        While the posterior is flat a Thompson-argmax lands on the corners of
-        the sampling box and never reveals *where* the interior peak is, so the
-        curvature (``w_quad``) can't be learned.  Early duels therefore lean
-        exploratory (random interior pairs); once curvature is known, Thompson
-        exploitation correctly settles near the peak on its own.
-        """
-        return max(0.25, math.exp(-self.n_obs / 50.0))
-
-    def next_duel(self, rng: random.Random | None = None
-                  ) -> Tuple[List[float], List[float]]:
-        rng = rng or self.rng
-        pool = self._candidate_pool(rng)
-        if rng.random() < self.explore_prob():
-            # exploration: two distinct interior marks to map out the landscape
-            a = rng.choice(pool)
-            far = [c for c in pool if self._zdist(c, a) >= self.d_min]
-            b = rng.choice(far) if far else rng.choice(pool)
+    # --- "blend" candidates ---------------------------------------------------
+    def _blend_candidate(self, rng: random.Random) -> List[float]:
+        """One whole-shape candidate: a Dirichlet-weighted blend of 3 distinct
+        seed marks (in z units, active axes only) plus jitter; falls back to
+        the plain N(0,1) interior sampling this replaced when there aren't
+        enough seeds to blend."""
+        if len(self.seed_zs) >= 3:
+            idxs = rng.sample(range(len(self.seed_zs)), 3)
+            w = self._dirichlet3(rng)
+            z = [sum(w[i] * self.seed_zs[idxs[i]][k] for i in range(3))
+                 for k in range(self.M)]
+            z = [zk + rng.gauss(0.0, 0.3) for zk in z]
         else:
-            # exploitation: dueling Thompson -- argmax of two posterior draws
-            w1 = self.sample_w(rng)
-            w2 = self.sample_w(rng)
-            a = self._argmax(pool, w1)
-            b = (self._argmax(pool, w2, avoid=a, min_dist=self.d_min)
-                 or self._argmax(pool, w2, avoid=a, min_dist=1e-9) or a)
+            z = [rng.gauss(0.0, 1.0) for _ in range(self.M)]
+        z = [max(-self.z_max, min(self.z_max, zk)) for zk in z]
+        return self._coeffs_from_z(z)
+
+    def _blend_pool(self, rng: random.Random) -> List[List[float]]:
+        pool = [c for c in (self._blend_candidate(rng)
+                            for _ in range(self.pool_size)) if not self._too_recent(c)]
+        if not pool:                      # recency starved the pool: relax it
+            pool = [self._blend_candidate(rng) for _ in range(self.pool_size)]
+        return pool
+
+    def _blend_duel(self, rng: random.Random) -> Tuple[List[float], List[float], dict]:
+        pool = self._blend_pool(rng)
+        w1 = self.sample_w(rng)
+        w2 = self.sample_w(rng)
+        a = self._argmax(pool, w1)
+        b = (self._argmax(pool, w2, avoid=a, min_dist=self.d_min)
+             or self._argmax(pool, w2, avoid=a, min_dist=1e-9) or a)
         self._recent.append(a)
         self._recent.append(b)
-        return a, b
+        return a, b, {"mode": "blend"}
+
+    # --- "axis" (staircase) duels ---------------------------------------------
+    def _axis_duel(self, rng: random.Random) -> Tuple[List[float], List[float], dict]:
+        """Hold every active axis at the current base point except one, and
+        straddle that axis's current best guess -- the axis chosen is the one
+        whose z* is least certain (weighted by how much it matters
+        geometrically), so each staircase duel is maximally informative."""
+        zstd = self.zstar_stds()
+        scores = [zstd[k] * self.stds[k] for k in range(self.M)]
+        order = sorted(range(self.M), key=lambda k: scores[k], reverse=True)
+        k = rng.choice(order[:min(3, self.M)])   # avoid hammering one axis
+
+        base_z = self._base_z()
+        z_star, is_peak = self.preferred_z()[k]
+        if is_peak:
+            t = z_star
+            delta = max(0.3, min(1.2, zstd[k]))
+        else:
+            # no interior peak learned yet: probe the interior to learn curvature
+            t = 0.0
+            delta = 1.25
+
+        lo = max(-self.z_max, t - delta)
+        hi = min(self.z_max, t + delta)
+        if hi - lo < 1e-6:
+            # clamping collapsed the pair onto one point: recenter around 0
+            # so the two candidates stay distinct.
+            lo = max(-self.z_max, -delta)
+            hi = min(self.z_max, delta)
+
+        z_a, z_b = (lo, hi) if rng.random() < 0.5 else (hi, lo)
+        za = list(base_z); za[k] = z_a
+        zb = list(base_z); zb[k] = z_b
+        return self._coeffs_from_z(za), self._coeffs_from_z(zb), {"mode": "axis", "axis": k}
+
+    # --- "confirm" duels --------------------------------------------------------
+    def _confirm_duel(self, rng: random.Random) -> Tuple[List[float], List[float], dict]:
+        """Duel the current believed-best mark against a near neighbour, to
+        sanity-check convergence rather than explore further."""
+        base_z = self._base_z()
+        pick = rng.choice(("mean", "seed", "blend"))
+        if pick == "seed" and self.seed_zs:
+            sz = rng.choice(self.seed_zs)
+            other_z = [sz[k] if k < len(sz) else 0.0 for k in range(self.M)]
+        elif pick == "blend":
+            # a blend-pool candidate near the optimum: jitter centered on the
+            # base point itself, rather than on a random blend.
+            other_z = [base_z[k] + rng.gauss(0.0, 0.4) for k in range(self.M)]
+        else:
+            other_z = [0.0] * self.M
+        other_z = [max(-self.z_max, min(self.z_max, z)) for z in other_z]
+
+        a_coeffs = self._coeffs_from_z(base_z)
+        b_coeffs = self._coeffs_from_z(other_z)
+        if rng.random() < 0.5:
+            a_coeffs, b_coeffs = b_coeffs, a_coeffs
+        return a_coeffs, b_coeffs, {"mode": "confirm"}
+
+    # --- scheduler ------------------------------------------------------------
+    def blend_prob(self) -> float:
+        """Fraction of scheduled duels that should be "blend" (broad,
+        seed-blend, whole-shape) rather than "axis" (staircase) duels,
+        annealed with data.
+
+        (Formerly ``explore_prob``: same annealing, repurposed for the
+        axis-vs-blend mode choice instead of exploit-vs-explore within a
+        single dueling-Thompson pool.) While the posterior is flat, blend
+        duels are needed to find out *where* the interior peaks even are;
+        once curvature is known on the active axes, axis duels spend the
+        budget sharpening each one instead.
+        """
+        return max(0.25, math.exp(-self.n_obs / 40.0))
+
+    def next_duel(self, rng: random.Random | None = None,
+                  mode: Optional[str] = None
+                  ) -> Tuple[List[float], List[float], dict]:
+        """Pick the next duel. Returns (a_coeffs, b_coeffs, meta), all
+        full K-length coefficient vectors (tail zero beyond n_active).
+
+        ``mode``: None picks "blend" vs. "axis" via ``blend_prob()``; pass
+        "axis", "blend", or "confirm" to force that kind of duel.
+        """
+        rng = rng or self.rng
+        if mode is None:
+            mode = "blend" if rng.random() < self.blend_prob() else "axis"
+        if mode == "axis":
+            return self._axis_duel(rng)
+        if mode == "blend":
+            return self._blend_duel(rng)
+        if mode == "confirm":
+            return self._confirm_duel(rng)
+        raise ValueError(f'mode must be "axis", "blend", "confirm" or None, got {mode!r}')
 
 
 # ---------------------------------------------------------------------------
-# Demo: recover a synthetic peaked preference
+# Demo: recover a synthetic peaked preference, via the hybrid scheduler
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     rng = random.Random(0)
-    K = 4
+    K = 6
+    M = 4                                     # only the leading 4 axes are active
     stds = [1.0] * K
-    true_peak = [0.8, -0.5, 0.0, 1.2]        # preferred z per axis
+    true_peak = [0.8, -0.5, 0.0, 1.2]         # preferred z, active axes only
+
+    # A handful of synthetic "seeds" in z-units, for the blend duels to mix.
+    seed_zs = [[rng.gauss(0.0, 1.0) for _ in range(K)] for _ in range(5)]
 
     def true_util(c):
-        return -sum((c[k] - true_peak[k]) ** 2 for k in range(K))
+        z = [c[k] / stds[k] for k in range(M)]
+        return -sum((z[k] - true_peak[k]) ** 2 for k in range(M))
 
-    m = PreferenceModel(stds, rng=rng)
+    m = PreferenceModel(stds, seed_zs=seed_zs, n_active=M, rng=rng)
     for _ in range(400):
-        a, b = m.next_duel(rng)
+        a, b, meta = m.next_duel(rng)
         pa = _sigmoid(true_util(a) - true_util(b))
         winner = "a" if rng.random() < pa else "b"
         m.observe(a, b, winner)
 
     got = [round(z, 2) for z, _ in m.preferred_z()]
     print(f"true peak z*: {true_peak}")
-    print(f"learned z*  : {got}  (from {m.n_obs} duels)")
+    print(f"learned z*  : {got}  (from {m.n_obs} duels, {m.M} active of {m.K} axes)")

@@ -10,7 +10,12 @@
     <label class="ctl">size
       <select id="size"></select>
     </label>
-    <span id="count"></span>
+    <span id="size-counts" class="dim"></span>
+    <div class="counts">
+      <span id="count"></span>
+      <span id="mode-label" class="dim"></span>
+    </div>
+    <button id="confirm-toggle" class="toggle" type="button" title="confirm the current best guess instead of exploring">Confirm</button>
     <span id="hint"><b>&larr;</b> prefer left &nbsp;·&nbsp; <b>&rarr;</b> prefer right
       &nbsp;·&nbsp; <b>&darr;</b> too close</span>
   </header>

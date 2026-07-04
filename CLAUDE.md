@@ -18,10 +18,11 @@ Four related pieces sharing one `Samples/` directory:
 4. **Preference learner** (`preference_server.py` / `preference_model.py` /
    `preference.*`) — a third web app on port 8002: a *forced A/B duel* (like the
    ranker) between marks generated from the eigenshape space, with a Bayesian
-   *peaked* model that learns which value along each eigen-axis is preferred and
-   actively picks each duel. `preference_display.py` renders the learned
-   preferences. Where the evolver asks "which of these do you like", this asks
-   "what eigen-values do you like".
+   *peaked* model — one per **size bucket** — that learns which value along each
+   of the top `n_active` eigen-axes is preferred and schedules each duel (axis
+   staircase / seed-blend / confirm). `preference_display.py` renders the learned
+   preferences and how they evolved. Where the evolver asks "which of these do
+   you like", this asks "what eigen-values do you like".
 
 The ranker, evolver, and preference learner are separate apps: the ranker serves
 `.png` files on port 8000, the evolver serves bred SVGs on port 8001, the preference
@@ -44,8 +45,9 @@ python3 eigen_explorer.py    # interactive PC-slider tool -> eigen_explorer.html
                              #   -n COMPONENTS / --z-max N / -o out.html
 python3 preference_server.py # forced-A/B preference learner on http://127.0.0.1:8002
                              #   --data-dir DIR for session.json + votes.jsonl (default pref_data/)
+                             #   --active-var F sets how many leading axes are learned (default 0.9)
 python3 preference_display.py # visualize learned preferences -> preference_results.html
-                             #   -n COMPONENTS / --steps N / --z-max N / --data-dir DIR
+                             #   --size 40px,60px / -n COMPONENTS / --steps N / --z-max N / --data-dir DIR
 python3 preference_model.py  # model demo: recover a synthetic peaked preference
 python3 -m unittest test_eigen test_preference -v   # tests for eigen.py + the preference model
 pip install -r requirements.txt   # only needed for analyze.ipynb (jupyter/numpy/pandas/matplotlib)
@@ -238,50 +240,86 @@ and that the preference is **peaked** (a sweet spot, worse on either side), so
 votes can drift back and forth near the optimum without a clear winner. Pure
 stdlib, like `eigen.py`.
 
-- **Feature map:** standardize a candidate's PCA coefficients by the basis
-  std (`z_k = c_k / stds_k`) and use a *per-axis quadratic* map
-  `phi(c) = [z_1..z_K, z_1²..z_K²]`. Utility `U = w·phi`, preference
-  `P(a>b) = sigmoid(w·(phi(a)-phi(b)))` (the constant cancels — no intercept).
-  The `z²` terms give each axis an interior optimum `z* = -w_lin/(2 w_quad)`
-  when `w_quad < 0` (a peak); `w_quad ≥ 0` = *edge* preference, flagged as such.
+- **Active axes:** only the leading `n_active` = M axes are learned and varied
+  (`stds` is variance-sorted, so "leading" = "most important"); tail axes sit at
+  the mean in every generated candidate. This is the fix for two compounding
+  problems with the original all-K design: a 2K-weight model dilutes each vote's
+  information, and independent `N(0,1)` sampling on all axes lands in random
+  directions no real seed exhibits — the "doesn't look right" shapes.
+  `phi`/`observe`/`utility` truncate incoming (full K-length, as logged)
+  coefficient vectors to M, so raising M later loses nothing.
+- **Feature map:** standardize by the basis std (`z_k = c_k / stds_k`) and use a
+  *per-axis quadratic* map `phi(c) = [z_1..z_M, z_1²..z_M²]`. Utility `U = w·phi`,
+  preference `P(a>b) = sigmoid(w·(phi(a)-phi(b)))` (the constant cancels — no
+  intercept). The `z²` terms give each axis an interior optimum
+  `z* = -w_lin/(2 w_quad)` when `w_quad < 0` (a peak); `w_quad ≥ 0` = *edge*
+  preference, flagged as such. `preferred_coeffs()` puts not-yet-curved axes at
+  the ±z_max edge (right for exploration); `best_coeffs()` leaves them at the
+  mean (right for display — the edge is a flat-prior artifact, not a preference).
 - **Posterior:** Bayesian logistic regression, Gaussian prior `N(0, prior_var·I)`,
   fitted by Newton/IRLS **with Armijo backtracking** — the line search is load-
   bearing: once duels concentrate near the optimum the data becomes near-separable
   and an undamped Newton step diverges (weights blow up to ±hundreds). The Laplace
-  covariance `N(w_MAP, H^-1)` (Cholesky of the Hessian) is used for Thompson draws.
-- **Active `next_duel`:** dueling Thompson sampling — show the argmax candidate of
-  two independent posterior draws from a pool of coherent eigenspace shapes.
-  `explore_prob()` anneals in early exploration (`max(0.25, exp(-n/50))`): while the
-  posterior is flat a Thompson-argmax lands on the sampling-box corners and never
-  reveals the interior peak, so early duels must be random-interior to learn the
-  curvature. A recency buffer forbids showing anything within `d_min` of the last
-  ~12 marks, so a shape only returns after a palette cleanser.
+  covariance `N(w_MAP, H^-1)` (Cholesky of the Hessian) is used for Thompson draws
+  and for `zstar_stds()` (posterior spread of each axis's z*).
+- **Hybrid `next_duel(rng, mode=None)`** returns `(a, b, meta)` and mixes three
+  duel kinds. `"axis"` (staircase): every axis held at the current best guess
+  except one — the axis whose z* is least certain, weighted by `stds` — dueling
+  two points that straddle its current z* (bracket width from `zstar_stds`,
+  wide interior probe if no peak is known yet). One-axis duels lose nothing (the
+  model has no cross terms) and concentrate each vote on exactly 2 weights.
+  `"blend"`: whole-shape candidates built by Dirichlet-blending 3 real seeds
+  (`seed_zs`) over the active axes + jitter, picked by dueling Thompson —
+  plausible by construction, covers combinations axis duels can't. `"confirm"`
+  (on request only): current best vs. a near neighbour (mean / seed / jittered
+  best). `blend_prob()` (née `explore_prob`) anneals `max(0.25, exp(-n/40))`:
+  blends dominate early to find where the interior peaks even are, axis duels
+  dominate later to sharpen them. The recency buffer (`d_min`, last ~12 marks)
+  applies to blend duels; axis/confirm duels intentionally reuse the base point
+  and bypass it.
 
 ## Preference learner app (`preference_server.py` / `preference.{html,js,css}`)
 
 Same stdlib-server pattern as `server.py` (ThreadingHTTPServer, 127.0.0.1,
 `--debug`, port 8002). A **session** lives in `--data-dir` (default `pref_data/`):
-`session.json` pins the fitted `PCABasis` (so logged coefficients decode
-identically forever) and `votes.jsonl` is the append-only log. On startup a
-compatible session is resumed and the model rebuilt from its votes
+`session.json` pins the fitted `PCABasis` plus `n_active` (leading axes carrying
+`--active-var` of the variance) and `seed_zs` (the seeds' standardized
+coefficients, for blend duels), so logged coefficients decode identically
+forever; `votes.jsonl` is the append-only log. On startup a compatible session
+is resumed (old sessions missing `n_active`/`seed_zs` are migrated in place) and
+**one model per size bucket** is rebuilt from that bucket's votes
 (`observe_many`); a layout-version mismatch exits rather than mis-decoding.
 
-Endpoints: `GET /api/status` (sizes, vote count, `n_components`), `GET
-/api/next?size=<bucket>` (issue a duel), `POST /api/vote`
-(`{duel_id, winner:"a"|"b"|"tie", size}` → log it, `model.observe`, and return the
-**next** duel in the same response, like `app.js`'s advance-after-vote). Issued
-duels are held server-side in `DUELS` keyed by `duel_id` (coeffs logged
-authoritatively; votes validated against issued duels, mirroring `server.py`
-validating filenames). `size` is display-only (a `--h` CSS var scales the inline
-SVG), fixed per session but selectable, and logged with each vote. `winner:"tie"`
-(Down arrow) feeds the model as `y=0.5`. One global model + lock.
+Endpoints: `GET /api/status` (sizes, `votes_by_size`, `n_active`,
+`n_components`), `GET /api/next?size=<bucket>[&mode=confirm]` (issue a duel from
+that size's model; only "confirm" may be forced — normal traffic lets the model
+schedule), `POST /api/vote` (`{duel_id, winner:"a"|"b"|"tie", size, mode?}` →
+log it, `observe` on that size's model, and return the **next** duel in the same
+response, honoring `mode` again — the UI's Confirm toggle rides this). Issued
+duels are held server-side in `DUELS` keyed by `duel_id` as
+`(a, b, size, meta)`; a vote whose `size` doesn't match the issued duel is
+rejected *without* consuming the duel. Vote records carry the duel's `mode` (and
+`axis` for staircase duels) for analysis. `size` scales the inline SVG (a `--h`
+CSS var); switching sizes in the UI fetches a fresh duel for the new bucket's
+model. `winner:"tie"` (Down arrow) feeds the model as `y=0.5`. One lock guards
+`MODELS`/`DUELS`/the log append.
 
 ## Preference display (`preference_display.py`)
 
 Like `eigen_display.py` but for *preferences*: reads `pref_data/session.json` +
-`votes.jsonl`, refits `PreferenceModel`, writes a self-contained
-`preference_results.html` — a header pairing the population **mean** mark with the
-**preferred** mark (model optimum decoded back to a drawing), then one row per
-eigen-axis (the mark stepped across it, cells tinted + barred by learned utility,
-the preferred `z*` outlined), sorted by how strongly the votes constrain each axis.
-Generated artifact, left untracked like `eigenshapes.html`.
+`votes.jsonl` (pinned basis + session `n_active`) and writes a self-contained
+`preference_results.html` with **one section per size bucket** that has votes
+(narrow with `--size`). Per section, top to bottom: a header pairing the
+population **mean** mark with the **current best guess** (`best_coeffs()` — not
+`preferred_coeffs()`, whose edge values on unresolved axes are artifacts); a
+**Bézier delta view** (best mark in ink over the mean in grey, one arrow per
+skeleton node from mean to best position, small displacements scaled up with a
+caption saying so); an **evolution filmstrip** (the model refit on vote-log
+prefixes — one model `observe()`d incrementally, IRLS warm-starts making the
+checkpoints cheap — decoded at each checkpoint); **per-axis z\* trajectories**
+(small multiples of z* vs. vote count, shaded ±1 `zstar_std`, gaps where an axis
+had no interior peak rather than fake edge values); and the per-axis utility
+rows (mark stepped across each axis, cells tinted + barred by learned utility,
+`z*` outlined, sorted by span) now labeled `z* = x.xx ± spread` with a
+settled/unsettled tag (`SETTLED_ZSTD_STD`). Generated artifact, left untracked
+like `eigenshapes.html`.

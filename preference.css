@@ -28,6 +28,33 @@ body {
 #hint { margin-left: auto; color: #999; }
 #hint b { color: #555; }
 
+.dim { color: #999; font-size: 11px; }
+#size-counts { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.counts {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+#mode-label { font-size: 11px; min-height: 13px; }
+
+#confirm-toggle {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  color: #666;
+  cursor: pointer;
+}
+#confirm-toggle:hover { border-color: #999; }
+#confirm-toggle.active {
+  background: #231f20;
+  border-color: #231f20;
+  color: #fff;
+}
+
 /* --h is the chosen display height in px; the mark box keeps the mark's aspect
    ratio (viewBox 110 x 124) and the inline SVG fills it, preserving shape. */
 #stage {
