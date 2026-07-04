@@ -9,14 +9,17 @@ optimum without a clear winner.
 Model
 -----
 A candidate is a coefficient vector ``c`` in an ``eigen.PCABasis`` (length K =
-``basis.n_components``).  Only the leading ``n_active`` = M axes (the ones with
-the most variance -- ``stds`` is already sorted descending) are *learned and
-actively varied*; tail axes beyond M sit at 0 (the mean) in every generated
-candidate.  Logged votes still carry the full K-length coefficient vector (so
-nothing is lost if M is later raised), but ``phi``/``observe``/``utility``
-silently truncate to the first M entries -- the tail simply doesn't influence
-the fit.  Standardize by the per-component population std so a unit is
-comparable across axes::
+``basis.n_components``).  By default **all K axes are learned and actively
+varied** -- ``n_active`` = M = K.  The scheduler doesn't spend its budget
+evenly, though: it's variance-weighted, so the leading (highest-``stds``) axes
+get most of the staircase duels while low-variance tail axes still get
+occasional probes (see "axis" below).  ``n_active`` remains available to
+*truncate* the model to the leading M < K axes when that's wanted (tests, the
+demo below) -- tail axes beyond M then sit at 0 (the mean) in every generated
+candidate, and logged votes still carry the full K-length coefficient vector
+(so nothing is lost if M is later raised) -- ``phi``/``observe``/``utility``
+silently truncate to the first M entries.  Standardize by the per-component
+population std so a unit is comparable across axes::
 
     z_k = c_k / stds_k          (k = 0 .. M-1)
 
@@ -46,10 +49,14 @@ budget confirming things already known.  ``next_duel`` instead mixes three
 kinds of question, each answering something the others can't:
 
 * **"axis" (staircase)** -- hold every axis but one at its current best guess
-  and duel two points that straddle the current guess *on the axis whose peak
-  is least certain* (``zstar_stds``, the posterior spread of that axis's
-  learned optimum).  This isolates one axis at a time, the fastest way to
-  pin down its curvature.
+  and duel two points that straddle the current guess on one axis, chosen by
+  **weighted random sampling** over all M active axes: weight = posterior
+  uncertainty of that axis's z* (``zstar_stds``) times how much a z-unit on
+  that axis moves the shape (``stds``).  This is what makes high-variance,
+  still-uncertain axes get most of the staircase budget while settled axes
+  (small ``zstar_std``) and low-variance tail axes fade out -- without ever
+  being excluded outright, so a tail axis still gets the occasional probe.
+  This isolates one axis at a time, the fastest way to pin down its curvature.
 * **"blend"** -- duel two broad, whole-shape candidates built by Dirichlet-
   blending real seed marks (plus jitter) over the active axes, so votes also
   cover combinations the axis-by-axis view can't reach.  Chosen by the argmax
@@ -430,13 +437,22 @@ class PreferenceModel:
     # --- "axis" (staircase) duels ---------------------------------------------
     def _axis_duel(self, rng: random.Random) -> Tuple[List[float], List[float], dict]:
         """Hold every active axis at the current base point except one, and
-        straddle that axis's current best guess -- the axis chosen is the one
-        whose z* is least certain (weighted by how much it matters
-        geometrically), so each staircase duel is maximally informative."""
+        straddle that axis's current best guess. The axis is picked by
+        **weighted random sampling** over all M active axes, weight =
+        ``zstar_std[k] * stds[k]`` (posterior uncertainty of that axis's z*,
+        times how much a z-unit on that axis matters geometrically) -- so
+        high-variance, still-uncertain axes get most of the staircase budget,
+        settled axes fade out, and low-variance tail axes still get occasional
+        probes rather than being excluded outright."""
         zstd = self.zstar_stds()
         scores = [zstd[k] * self.stds[k] for k in range(self.M)]
-        order = sorted(range(self.M), key=lambda k: scores[k], reverse=True)
-        k = rng.choice(order[:min(3, self.M)])   # avoid hammering one axis
+        weights = [s if math.isfinite(s) and s > 0.0 else 0.0 for s in scores]
+        if any(weights):
+            k = rng.choices(range(self.M), weights=weights)[0]
+        else:
+            # All scores are ~0 (or non-finite) -- e.g. a totally fresh model
+            # with no votes yet -- fall back to a uniform pick.
+            k = rng.choice(range(self.M))
 
         base_z = self._base_z()
         z_star, is_peak = self.preferred_z()[k]

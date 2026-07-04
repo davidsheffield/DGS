@@ -9,6 +9,7 @@ All synthetic -- no ``Samples/`` needed.
 import math
 import random
 import unittest
+from collections import Counter
 
 from preference_model import PreferenceModel, _sigmoid, _softplus
 
@@ -134,6 +135,33 @@ class TestBestCoeffs(unittest.TestCase):
         self.assertAlmostEqual(best[1], 0.0, places=6)
         self.assertAlmostEqual(pref[1], 2.5 * 4.0, places=6)
         self.assertNotAlmostEqual(best[1], pref[1], places=3)
+
+
+class TestAxisSelectionWeighting(unittest.TestCase):
+    def test_high_variance_axes_chosen_more_and_selection_not_confined_to_top3(self):
+        # Strongly descending stds: axis 0 should dominate the staircase
+        # schedule, axis 5 (lowest variance) should be picked least, and with
+        # 6 axes some duels must land beyond the old hard-coded top-3.
+        stds = [5.0, 3.0, 1.5, 0.7, 0.3, 0.1]
+        rng = random.Random(42)
+        m = PreferenceModel(stds, n_active=None, rng=rng)
+
+        # Warm the model with some blend-duel observations so zstar_stds()
+        # has something other than a totally flat prior to work with.
+        for _ in range(15):
+            a, b, meta = m.next_duel(rng, mode="blend")
+            m.observe(a, b, rng.choice(["a", "b"]))
+
+        counts = Counter()
+        for _ in range(200):
+            a, b, meta = m.next_duel(rng, mode="axis")
+            counts[meta["axis"]] += 1
+
+        self.assertGreater(counts[0], counts[5],
+                           f"highest-std axis should be probed more than the "
+                           f"lowest-std axis: {dict(counts)}")
+        self.assertTrue(any(k >= 3 for k in counts),
+                        f"selection should not be confined to a top-3: {dict(counts)}")
 
 
 class TestNextDuel(unittest.TestCase):

@@ -12,17 +12,19 @@ Same stack as the other two apps: stdlib-only ThreadingHTTPServer on localhost.
 
     python3 preference_server.py [--port 8002] [--debug] [--samples DIR]
                                  [--data-dir DIR] [--var-keep 1.0]
-                                 [--active-var 0.9]
 
 A **session** lives in ``--data-dir`` (default ``pref_data/``): ``session.json``
 pins the fitted ``PCABasis`` (so logged coefficients decode identically forever,
-like an evolver run), the number of *active* axes (``n_active`` -- the leading
-axes carrying ``--active-var`` of the population variance) and the seed marks'
-standardized coefficients (``seed_zs``, used for blend-duel candidates).
-``votes.jsonl`` is the append-only log.  On startup the session is resumed if
-present and layout-compatible (old sessions missing ``n_active``/``seed_zs``
-are migrated in place), and one preference model **per size bucket** is rebuilt
-from that bucket's replayed votes.
+like an evolver run), the number of *active* axes (``n_active`` -- all K
+components: every axis is learned and varied, with the hybrid scheduler in
+``preference_model.py`` weighting duels toward the highest-variance axes) and
+the seed marks' standardized coefficients (``seed_zs``, used for blend-duel
+candidates).  ``votes.jsonl`` is the append-only log.  On startup the session
+is resumed if present and layout-compatible (an old session's ``n_active`` --
+missing entirely, or lower than the current ``basis.n_components`` from a
+prior ``--active-var`` truncation -- is raised to the full component count and
+re-saved; a missing ``seed_zs`` is migrated in place too), and one preference
+model **per size bucket** is rebuilt from that bucket's replayed votes.
 
 API:
     GET  /                       the duel UI
@@ -63,7 +65,6 @@ HOST = "127.0.0.1"
 PORT = 8002
 DEBUG = False
 VAR_KEEP = 1.0
-ACTIVE_VAR = 0.9                # fraction of variance the active axes must carry
 
 SESSION_VERSION = 1
 SIZES = ["20px", "30px", "40px", "50px", "60px", "70px", "80px"]
@@ -142,18 +143,6 @@ def append_vote(record: dict) -> None:
         os.fsync(f.fileno())
 
 
-def compute_n_active(stds: list[float], active_var: float) -> int:
-    """Smallest M whose cumulative variance share (stds are already sorted
-    descending) reaches ``active_var``."""
-    total = sum(s * s for s in stds) or 1.0
-    cum = 0.0
-    for i, s in enumerate(stds):
-        cum += s * s
-        if cum / total >= active_var:
-            return i + 1
-    return len(stds)
-
-
 def seed_zs_for(basis: PCABasis, genomes) -> list[list[float]]:
     """Encode each seed genome with the fitted basis and standardize by
     ``stds`` -> z units, for use as blend-duel candidates."""
@@ -186,9 +175,13 @@ def init_session() -> None:
         SESSION, BASIS = state, basis
 
         migrated = False
-        if "n_active" not in SESSION:
-            SESSION["n_active"] = compute_n_active(basis.stds, ACTIVE_VAR)
+        if SESSION.get("n_active") is None or SESSION["n_active"] < basis.n_components:
+            old = SESSION.get("n_active")
+            SESSION["n_active"] = basis.n_components
             migrated = True
+            print(f"note: raising n_active {old!r} -> {basis.n_components} "
+                  f"(all components are now learned/varied; this loses nothing -- "
+                  f"votes.jsonl already logs full K-length coefficient vectors)")
         if "seed_zs" not in SESSION:
             genomes = load_samples(str(SAMPLES_DIR / "vector_*.svg"))
             SESSION["seed_zs"] = seed_zs_for(basis, genomes)
@@ -215,7 +208,6 @@ def init_session() -> None:
     if len(genomes) < 2:
         sys.exit(f"need at least 2 seed SVGs in {SAMPLES_DIR}, found {len(genomes)}")
     basis = PCABasis.fit(genomes, var_keep=VAR_KEEP)
-    n_active = compute_n_active(basis.stds, ACTIVE_VAR)
     SESSION = {
         "version": SESSION_VERSION,
         "session_id": uuid.uuid4().hex,
@@ -223,14 +215,14 @@ def init_session() -> None:
         "sizes": SIZES,
         "default_size": DEFAULT_SIZE,
         "basis": basis.to_dict(),
-        "n_active": n_active,
+        "n_active": basis.n_components,
         "seed_zs": seed_zs_for(basis, genomes),
     }
     BASIS = basis
     MODELS = {}
     save_session()
     print(f"new session {SESSION['session_id'][:8]} — fitted {basis.n_components} "
-          f"components ({n_active} active) from {basis.n_seeds} seeds")
+          f"components (all active) from {basis.n_seeds} seeds")
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +393,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    global DEBUG, DATA_DIR, SAMPLES_DIR, VAR_KEEP, ACTIVE_VAR, PORT
+    global DEBUG, DATA_DIR, SAMPLES_DIR, VAR_KEEP, PORT
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--debug", action="store_true", help="log every request")
@@ -411,15 +403,11 @@ def main() -> None:
                         help="where session.json + votes.jsonl live (default pref_data/)")
     parser.add_argument("--var-keep", type=float, default=VAR_KEEP,
                         help="fraction of variance to keep when fitting a new basis")
-    parser.add_argument("--active-var", type=float, default=ACTIVE_VAR,
-                        help="fraction of variance the active (learned/varied) "
-                             "axes must carry, when creating a new session")
     args = parser.parse_args()
     DEBUG = args.debug
     DATA_DIR = Path(args.data_dir).expanduser().resolve()
     SAMPLES_DIR = Path(args.samples).expanduser().resolve()
     VAR_KEEP = args.var_keep
-    ACTIVE_VAR = args.active_var
     PORT = args.port
 
     init_session()
