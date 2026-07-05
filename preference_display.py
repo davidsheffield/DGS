@@ -47,6 +47,35 @@ narrow it with ``--size``). Each section has, top to bottom:
   faded to low opacity -- so you can tell which candidates actually dueled
   each other.
 
+Also, per size section:
+
+* **per-axis utility curves** -- the MAP utility curve (``U(z) = w_lin*z +
+  w_quad*z^2``) for the same top axes as the utility table, ~20 thin
+  posterior draws (``model.sample_w``) underneath showing how sure the model
+  is, a dashed line at z\\* when there's an interior peak, and evidence ticks
+  along the bottom marking every "axis"-mode duel that actually probed that
+  axis (filled ink = winner, hollow grey = loser, half-height grey = tie);
+* a **model calibration** section -- a 5-bin reliability chart of predicted
+  vs. observed outcome (sequential predictions made *before* each vote was
+  folded in, with the Brier score) plus an **upset gallery** of the votes the
+  model was most confident about and still got wrong;
+* a **"when to stop voting"** panel -- total posterior z\\* uncertainty
+  (``zstar_std`` std-weighted and summed across axes -- exactly the
+  scheduler's axis-picking score) against vote count; flattening is the
+  stopping signal;
+* a **small-size legibility strip** near the header pair -- the current best
+  guess rendered at 16/24/32/48/64px; and
+* a **nearest-seed proximity** view after the Bezier delta -- the 3 seeds
+  standardized-closest to the learned best guess, plus the median seed-seed
+  distance for scale.
+
+Once >=2 size buckets have votes, a document-level **cross-size comparison**
+follows every section: each bucket's best guess overlaid in one SVG (one
+categorical color per size) and a z\\* dot-plot per axis across sizes (error
+bars = zstar_std). With fewer than 2 buckets voted on, a one-line note renders
+in its place -- which is what the bundled example data (single "60px" bucket)
+produces.
+
 Refits from the log on each run, like ``eigen_display.py`` refits from
 ``Samples/``. Pure standard library; output is a generated artifact.
 
@@ -69,7 +98,7 @@ from pathlib import Path
 
 from eigen import PCABasis
 from genome import PATH_ORDER, STROKE_WIDTH, VIEWBOX
-from preference_model import WINNER_Y, PreferenceModel
+from preference_model import WINNER_Y, PreferenceModel, _sigmoid
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "pref_data"
@@ -106,6 +135,18 @@ MODE_COLORS = {
 BEST_COLOR = "#1a7f37"
 SEED_COLOR = "#9a9a9a"
 MEAN_MARKER_COLOR = "#666666"
+
+# Categorical palette for the cross-size comparison (dataviz skill's validated
+# 8-hue theme, fixed order -- unlike MODE_COLORS above, green isn't reserved
+# here: every size *is* "the learned preference" for that bucket, so there's
+# no single "preference" hue to protect.
+SIZE_PALETTE = ["#2a78d6", "#1baf7a", "#eda100", "#008300",
+               "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"]
+
+# VIEWBOX ("0 0 W H") aspect ratio, for the small-size legibility strip's
+# fixed-px cells (mirrors eigen_explorer.py's AR).
+_VB_W, _VB_H = (float(x) for x in VIEWBOX.split()[2:])
+MARK_ASPECT = _VB_H / _VB_W
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +208,17 @@ def _lin_scale(d0: float, d1: float, r0: float, r1: float):
 
 def _round(seq, nd: int = 6) -> list[float]:
     return [round(float(v), nd) for v in seq]
+
+
+def _percentile(sorted_vals: list[float], q: float) -> float:
+    """``q`` in [0,1] on an already-sorted list -- nearest-rank, no interpolation
+    (fine at the draw counts used here); used to clip a wild posterior draw's
+    influence on a chart's Y range without discarding the draw itself."""
+    n = len(sorted_vals)
+    if n == 0:
+        return 0.0
+    idx = max(0, min(n - 1, round(q * (n - 1))))
+    return sorted_vals[idx]
 
 
 def _safe_id(s: str) -> str:
@@ -241,6 +293,86 @@ def _util_bg(norm: float) -> str:
     return "#%02x%02x%02x" % (r, g, b)
 
 
+LEGIB_SIZES = (16, 24, 32, 48, 64)
+
+
+def legibility_strip_html(basis: PCABasis, model: PreferenceModel) -> str:
+    """The current best guess rendered at fixed small pixel heights (like
+    eigen_explorer.py's preview strip) -- a quick check that the learned mark
+    still reads once it's actually small."""
+    ds = _paths_at_coeffs(basis, model.best_coeffs())
+    svg = _svg(ds, STROKE_WIDTH, "legib-svg")
+    cells = []
+    for h in LEGIB_SIZES:
+        w = round(h / MARK_ASPECT, 1)
+        cells.append(
+            f'<div class="legib-cell"><div class="legib-mark" '
+            f'style="width:{w}px;height:{h}px">{svg}</div>'
+            f'<div class="legib-cap">{h}px</div></div>')
+    return (f'<div class="legib-row">{"".join(cells)}</div>'
+           f'<p class="chart-sub">Legibility check at small sizes.</p>')
+
+
+def _zdist(c1: list[float], c2: list[float], stds: list[float]) -> float:
+    """Standardized z-distance between two full-K coefficient vectors --
+    mirrors ``PreferenceModel._zdist``."""
+    return math.sqrt(sum(((a - b) / s) ** 2 for a, b, s in zip(c1, c2, stds)))
+
+
+def seed_proximity_html(basis: PCABasis, model: PreferenceModel, state: dict) -> str:
+    """The 3 seeds standardized-closest to the learned best guess, with the
+    median seed<->seed distance as the yardstick for "is this close to an
+    existing design, or somewhere new"."""
+    seeds = build_seed_points(basis, state)
+    if len(seeds) < 2:
+        return '<p class="chart-sub">Not enough seeds recorded to judge proximity.</p>'
+
+    stds = basis.stds
+    best = model.best_coeffs()
+    dists = sorted(
+        ((_zdist(best, s["coeffs"], stds), s["name"], s["coeffs"]) for s in seeds),
+        key=lambda t: t[0])
+    nearest = dists[:3]
+
+    pair_ds = sorted(
+        _zdist(seeds[i]["coeffs"], seeds[j]["coeffs"], stds)
+        for i in range(len(seeds)) for j in range(i + 1, len(seeds)))
+    m = len(pair_ds)
+    median = pair_ds[m // 2] if m % 2 else (pair_ds[m // 2 - 1] + pair_ds[m // 2]) / 2.0
+
+    best_g = basis.decode(best)
+    best_ds = [best_g.paths[pid].to_d() for pid in PATH_ORDER]
+
+    items = []
+    for dist, name, scoeffs in nearest:
+        seed_g = basis.decode(scoeffs)
+        seed_ds = [seed_g.paths[pid].to_d() for pid in PATH_ORDER]
+        body = (
+            "".join(f'<path d="{d}" fill="none" stroke="{MEAN_STROKE}" '
+                   f'stroke-width="{STROKE_WIDTH}" stroke-miterlimit="10"/>' for d in seed_ds)
+            + "".join(f'<path d="{d}" fill="none" stroke="{INK_STROKE}" '
+                     f'stroke-width="{STROKE_WIDTH}" stroke-miterlimit="10"/>' for d in best_ds)
+        )
+        svg = (f'<svg viewBox="{VIEWBOX}" preserveAspectRatio="xMidYMid meet" '
+              f'class="mark mid">{body}</svg>')
+        name_esc = html.escape(name) if name else "(unnamed seed)"
+        items.append(
+            f'<div class="seedprox-item">{svg}'
+            f'<div class="seedprox-label">{name_esc}<br>dist {dist:.2f}</div></div>')
+
+    nearest_dist = nearest[0][0]
+    if nearest_dist <= median:
+        verdict = ("closer to that seed than seeds typically sit from each other -- "
+                  "reads as close to an existing design")
+    else:
+        verdict = ("farther from every seed than seeds typically sit from each other -- "
+                  "reads as a genuinely new point in the design space")
+    summary = (f'<p class="chart-sub">Median seed&harr;seed distance: {median:.2f}. Nearest '
+              f'seed to the learned best is <b>{html.escape(nearest[0][1]) or "(unnamed)"}</b> '
+              f'at {nearest_dist:.2f} &mdash; {verdict}.</p>')
+    return f'<div class="seedprox-row">{"".join(items)}</div>{summary}'
+
+
 def _delta_view_svg(mean_g, best_g) -> str:
     """Best mark (ink) over the population mean (grey) -- no arrows; the
     overlay itself is the delta."""
@@ -271,7 +403,15 @@ def build_frames_and_model(basis: PCABasis, votes: list[dict], seed: int = 0):
     Always built with ``n_active=None`` (all components) -- matching
     ``preference_model.py``'s current philosophy that every axis is learned
     and varied, just scheduled unevenly. Any ``n_active`` stored in an old
-    session is ignored here."""
+    session is ignored here.
+
+    Also returns ``preds``: one dict per vote, the model's *sequential*
+    prediction made just before that vote was folded in --
+    ``p = sigmoid(utility(a) - utility(b))`` against ``y = WINNER_Y[winner]``
+    -- used by the calibration view and the upset gallery. ``n_obs_before``
+    records how many votes the model had already seen at that point, since
+    "how surprising was this" is only meaningful once the model has some
+    data."""
     model = PreferenceModel(basis.stds, n_active=None, rng=random.Random(seed))
     n = len(votes)
     step = max(5, n // 12) if n else 5
@@ -288,13 +428,25 @@ def build_frames_and_model(basis: PCABasis, votes: list[dict], seed: int = 0):
         })
 
     snapshot(0)
+    preds = []
     ci = 0
     for i, v in enumerate(votes, start=1):
+        p = _sigmoid(model.utility(v["a_coeffs"]) - model.utility(v["b_coeffs"]))
+        preds.append({
+            "idx": i,
+            "p": p,
+            "y": WINNER_Y[v["winner"]],
+            "winner": v["winner"],
+            "mode": v.get("mode") or "unspecified",
+            "n_obs_before": model.n_obs,
+            "a_coeffs": v["a_coeffs"],
+            "b_coeffs": v["b_coeffs"],
+        })
         model.observe(v["a_coeffs"], v["b_coeffs"], v["winner"])
         if ci < len(checkpoints) and i == checkpoints[ci]:
             snapshot(i)
             ci += 1
-    return frames, model
+    return frames, model, preds
 
 
 def filmstrip_html(basis: PCABasis, frames: list[dict]) -> str:
@@ -406,6 +558,60 @@ def trajectories_html(model: PreferenceModel, frames: list[dict], basis: PCABasi
     shown = report[:min(8, len(report))]
     items = "".join(traj_chart_html(r["axis"], r, frames, basis, total_var) for r in shown)
     return f'<div class="traj-grid">{items}</div>'
+
+
+# ---------------------------------------------------------------------------
+# "When to stop voting": total posterior z* uncertainty (std-weighted, summed
+# across axes -- exactly the "axis" scheduler's per-axis score) vs. vote
+# count. Flattening is a stopping signal: further duels are pinning down
+# less and less.
+# ---------------------------------------------------------------------------
+
+STOP_W, STOP_H = 460, 150
+STOP_M = {"left": 46, "right": 14, "top": 12, "bottom": 26}
+
+
+def stopping_panel_html(frames: list[dict], basis: PCABasis) -> str:
+    pts = [(f["n"], sum(zstd * std for zstd, std in zip(f["zstd"], basis.stds)))
+          for f in frames]
+    caption = ('<p class="chart-sub">Sum of every axis\'s posterior z&#42; uncertainty '
+              '(&times; that axis\'s std -- exactly the &quot;axis&quot; scheduler\'s '
+              'per-axis score), against vote count. When this flattens, additional duels '
+              'are pinning down less and less -- a stopping signal, not a hard rule.</p>')
+    if len(pts) < 2:
+        return '<p class="chart-sub">Not enough votes yet to plot a trend.</p>' + caption
+
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    x0, x1 = 0, max(xs) or 1
+    y0 = 0.0
+    y1 = max(ys) * 1.1 or 1.0
+
+    sx = _lin_scale(x0, x1, STOP_M["left"], STOP_W - STOP_M["right"])
+    sy = _lin_scale(y0, y1, STOP_H - STOP_M["bottom"], STOP_M["top"])
+
+    svg = []
+    for t in _nice_ticks(y0, y1, 4):
+        py = sy(t)
+        svg.append(f'<line class="grid" x1="{STOP_M["left"]}" x2="{STOP_W - STOP_M["right"]}" '
+                   f'y1="{py:.1f}" y2="{py:.1f}"/>')
+        svg.append(f'<text x="{STOP_M["left"] - 6}" y="{py + 3:.1f}" text-anchor="end">{t:g}</text>')
+    for t in _nice_ticks(x0, x1, 5):
+        px = sx(t)
+        svg.append(f'<text x="{px:.1f}" y="{STOP_H - STOP_M["bottom"] + 14}" '
+                   f'text-anchor="middle">{t:g}</text>')
+    svg.append(f'<line class="baseline" x1="{STOP_M["left"]}" x2="{STOP_W - STOP_M["right"]}" '
+               f'y1="{STOP_H - STOP_M["bottom"]}" y2="{STOP_H - STOP_M["bottom"]}"/>')
+    svg.append(f'<line class="baseline" x1="{STOP_M["left"]}" x2="{STOP_M["left"]}" '
+               f'y1="{STOP_M["top"]}" y2="{STOP_H - STOP_M["bottom"]}"/>')
+
+    line_d = "M" + " L".join(f"{sx(x):.1f},{sy(y):.1f}" for x, y in pts)
+    svg.append(f'<path class="stop-line" d="{line_d}"/>')
+    for x, y in pts:
+        svg.append(f'<circle class="stop-dot" cx="{sx(x):.1f}" cy="{sy(y):.1f}" r="3"/>')
+
+    body = (f'<svg width="{STOP_W}" height="{STOP_H}" viewBox="0 0 {STOP_W} {STOP_H}" '
+           f'class="axis stop-svg">{"".join(svg)}</svg>')
+    return body + caption
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +763,251 @@ def utility_rows_html(basis: PCABasis, model: PreferenceModel, n_components: int
 
 
 # ---------------------------------------------------------------------------
+# Per-axis utility curves: what the model believes U(z) looks like (MAP,
+# thick green), how sure it is (thin posterior draws, same green, low
+# opacity), where it thinks the peak is (dashed line at z*), and the actual
+# evidence (ticks along the bottom from "axis"-mode duels that probed this
+# axis). Same axes/order as the utility table above (``model.axis_report()``,
+# top n_show).
+# ---------------------------------------------------------------------------
+
+UCURVE_W, UCURVE_H = TRAJ_W, TRAJ_H
+UCURVE_M = TRAJ_M
+N_POSTERIOR_DRAWS = 20
+UCURVE_SEED = 20260704   # fixed -> the posterior-draw fan is reproducible
+UCURVE_TICK_H = 10
+
+
+def _axis_evidence_ticks(k: int, votes: list[dict], basis: PCABasis) -> list[dict]:
+    """Every "axis"-mode vote in this bucket that probed axis ``k``: uses the
+    logged ``axis`` field when present, else infers it as the single index
+    where a_coeffs/b_coeffs differ (true by construction for a staircase
+    duel -- every other axis is held at the base point)."""
+    out = []
+    for i, v in enumerate(votes, start=1):
+        if (v.get("mode") or "unspecified") != "axis":
+            continue
+        a, b = v["a_coeffs"], v["b_coeffs"]
+        axis = v.get("axis")
+        if axis is None:
+            diffs = [j for j in range(len(a)) if abs(a[j] - b[j]) > 1e-9]
+            if len(diffs) != 1:
+                continue
+            axis = diffs[0]
+        if axis != k:
+            continue
+        std = basis.stds[k]
+        out.append({"idx": i, "za": a[k] / std, "zb": b[k] / std, "winner": v["winner"]})
+    return out
+
+
+def utility_curve_chart_html(k: int, entry: dict, model: PreferenceModel,
+                             votes: list[dict], basis: PCABasis, z_max: float) -> str:
+    title = f'<div class="traj-title">PC{k + 1}</div>'
+    lin, quad, z_star, is_peak = entry["lin"], entry["quad"], entry["z_star"], entry["peak"]
+
+    n_grid = 61
+    zs = [-z_max + 2 * z_max * i / (n_grid - 1) for i in range(n_grid)]
+    map_ys = [lin * z + quad * z * z for z in zs]
+
+    rng = random.Random(UCURVE_SEED + k)
+    draw_curves = []
+    all_draw_vals = []
+    for _ in range(N_POSTERIOR_DRAWS):
+        w = model.sample_w(rng)
+        b, a = w[k], w[model.M + k]
+        ys = [b * z + a * z * z for z in zs]
+        draw_curves.append(ys)
+        all_draw_vals.extend(ys)
+
+    y0, y1 = min(map_ys), max(map_ys)
+    if all_draw_vals:
+        sv = sorted(all_draw_vals)
+        y0 = min(y0, _percentile(sv, 0.05))
+        y1 = max(y1, _percentile(sv, 0.95))
+    if y1 - y0 < 1e-9:
+        y0, y1 = y0 - 0.5, y1 + 0.5
+    pad = (y1 - y0) * 0.12
+    y0, y1 = y0 - pad, y1 + pad
+
+    sx = _lin_scale(-z_max, z_max, UCURVE_M["left"], UCURVE_W - UCURVE_M["right"])
+    sy = _lin_scale(y0, y1, UCURVE_H - UCURVE_M["bottom"], UCURVE_M["top"])
+    clampy = lambda v: max(y0, min(y1, v))
+    clampz = lambda v: max(-z_max, min(z_max, v))
+
+    svg = []
+    for t in _nice_ticks(y0, y1, 3):
+        py = sy(t)
+        svg.append(f'<line class="grid" x1="{UCURVE_M["left"]}" x2="{UCURVE_W - UCURVE_M["right"]}" '
+                   f'y1="{py:.1f}" y2="{py:.1f}"/>')
+        svg.append(f'<text x="{UCURVE_M["left"] - 5}" y="{py + 3:.1f}" text-anchor="end">{t:g}</text>')
+    svg.append(f'<line class="baseline" x1="{UCURVE_M["left"]}" x2="{UCURVE_W - UCURVE_M["right"]}" '
+               f'y1="{UCURVE_H - UCURVE_M["bottom"]}" y2="{UCURVE_H - UCURVE_M["bottom"]}"/>')
+    svg.append(f'<line class="baseline" x1="{UCURVE_M["left"]}" x2="{UCURVE_M["left"]}" '
+               f'y1="{UCURVE_M["top"]}" y2="{UCURVE_H - UCURVE_M["bottom"]}"/>')
+    svg.append(f'<text x="{UCURVE_M["left"]}" y="{UCURVE_H - 4}" text-anchor="start">{-z_max:g}</text>')
+    svg.append(f'<text x="{UCURVE_W - UCURVE_M["right"]}" y="{UCURVE_H - 4}" '
+               f'text-anchor="end">{z_max:g}</text>')
+
+    for ys in draw_curves:
+        d = "M" + " L".join(f"{sx(z):.1f},{sy(clampy(y)):.1f}" for z, y in zip(zs, ys))
+        svg.append(f'<path class="ucurve-draw" d="{d}"/>')
+
+    if is_peak:
+        px = sx(clampz(z_star))
+        svg.append(f'<line class="ucurve-zstar" x1="{px:.1f}" x2="{px:.1f}" '
+                   f'y1="{UCURVE_M["top"]}" y2="{UCURVE_H - UCURVE_M["bottom"]}"/>')
+
+    map_d = "M" + " L".join(f"{sx(z):.1f},{sy(clampy(y)):.1f}" for z, y in zip(zs, map_ys))
+    svg.append(f'<path class="ucurve-map" d="{map_d}"/>')
+
+    ticky = UCURVE_H - UCURVE_M["bottom"]
+    for ev in _axis_evidence_ticks(k, votes, basis):
+        xa, xb = sx(clampz(ev["za"])), sx(clampz(ev["zb"]))
+        title_a = f'vote #{ev["idx"]}: z={ev["za"]:+.2f}'
+        title_b = f'vote #{ev["idx"]}: z={ev["zb"]:+.2f}'
+        if ev["winner"] == "tie":
+            h = UCURVE_TICK_H * 0.5
+            svg.append(f'<line class="tick-tie" x1="{xa:.1f}" x2="{xa:.1f}" '
+                       f'y1="{ticky}" y2="{ticky - h}"><title>{title_a}, tie</title></line>')
+            svg.append(f'<line class="tick-tie" x1="{xb:.1f}" x2="{xb:.1f}" '
+                       f'y1="{ticky}" y2="{ticky - h}"><title>{title_b}, tie</title></line>')
+        else:
+            win_x, lose_x = (xa, xb) if ev["winner"] == "a" else (xb, xa)
+            win_t, lose_t = (title_a, title_b) if ev["winner"] == "a" else (title_b, title_a)
+            svg.append(f'<line class="tick-win" x1="{win_x:.1f}" x2="{win_x:.1f}" '
+                       f'y1="{ticky}" y2="{ticky - UCURVE_TICK_H}">'
+                       f'<title>{win_t}, won</title></line>')
+            svg.append(f'<line class="tick-lose" x1="{lose_x:.1f}" x2="{lose_x:.1f}" '
+                       f'y1="{ticky}" y2="{ticky - UCURVE_TICK_H}">'
+                       f'<title>{lose_t}, lost</title></line>')
+
+    body = (f'<svg width="{UCURVE_W}" height="{UCURVE_H}" viewBox="0 0 {UCURVE_W} {UCURVE_H}" '
+           f'class="axis ucurve-svg">{"".join(svg)}</svg>')
+    return f'<div class="traj-item">{title}{body}</div>'
+
+
+def utility_curves_html(model: PreferenceModel, votes: list[dict], basis: PCABasis,
+                        z_max: float, n_components: int) -> str:
+    report = model.axis_report()
+    n_show = min(n_components, len(report))
+    items = "".join(utility_curve_chart_html(r["axis"], r, model, votes, basis, z_max)
+                    for r in report[:n_show])
+    caption = ('<p class="chart-sub">The thick green curve is what the model currently '
+              f'believes each axis\'s utility looks like; the pale thin curves are '
+              f'{N_POSTERIOR_DRAWS} posterior draws (<code>sample_w</code>), showing how sure it '
+              'is. The dashed vertical line marks z&#42; where there\'s an interior peak. '
+              'Ticks along the bottom are the actual duel evidence for that axis: filled '
+              'ink = winner, hollow grey = loser, half-height grey = tie.</p>')
+    return f'<div class="traj-grid">{items}</div>{caption}'
+
+
+# ---------------------------------------------------------------------------
+# Model calibration: were the model's sequential predictions (made *before*
+# each vote was folded in, by build_frames_and_model) any good? A reliability
+# chart bins predicted vs. observed outcome; an upset gallery surfaces the
+# votes the model was most confident about and still got wrong.
+# ---------------------------------------------------------------------------
+
+CAL_W, CAL_H = 260, 220
+CAL_M = {"left": 40, "right": 14, "top": 14, "bottom": 34}
+N_CAL_BINS = 5
+
+
+def calibration_chart_html(preds: list[dict]) -> tuple[str, float]:
+    """Returns (svg_html, brier_score). Bins predictions into ``N_CAL_BINS``
+    equal-width bins over [0,1]; each bin is one dot (mean predicted vs. mean
+    observed, radius scaled by bin count), plus the y=x reference diagonal."""
+    bins: list[list[dict]] = [[] for _ in range(N_CAL_BINS)]
+    for pr in preds:
+        b = min(N_CAL_BINS - 1, int(pr["p"] * N_CAL_BINS))
+        bins[b].append(pr)
+    max_count = max((len(bb) for bb in bins), default=1) or 1
+
+    brier = (sum((pr["p"] - pr["y"]) ** 2 for pr in preds) / len(preds)) if preds else 0.0
+
+    sx = _lin_scale(0.0, 1.0, CAL_M["left"], CAL_W - CAL_M["right"])
+    sy = _lin_scale(0.0, 1.0, CAL_H - CAL_M["bottom"], CAL_M["top"])
+
+    svg = []
+    for t in (0.0, 0.25, 0.5, 0.75, 1.0):
+        px, py = sx(t), sy(t)
+        svg.append(f'<line class="grid" x1="{CAL_M["left"]}" x2="{CAL_W - CAL_M["right"]}" '
+                   f'y1="{py:.1f}" y2="{py:.1f}"/>')
+        svg.append(f'<line class="grid" x1="{px:.1f}" x2="{px:.1f}" '
+                   f'y1="{CAL_M["top"]}" y2="{CAL_H - CAL_M["bottom"]}"/>')
+        svg.append(f'<text x="{CAL_M["left"] - 6}" y="{py + 3:.1f}" text-anchor="end">{t:g}</text>')
+        svg.append(f'<text x="{px:.1f}" y="{CAL_H - CAL_M["bottom"] + 14}" '
+                   f'text-anchor="middle">{t:g}</text>')
+    svg.append(f'<line class="baseline" x1="{CAL_M["left"]}" x2="{CAL_W - CAL_M["right"]}" '
+               f'y1="{CAL_H - CAL_M["bottom"]}" y2="{CAL_H - CAL_M["bottom"]}"/>')
+    svg.append(f'<line class="baseline" x1="{CAL_M["left"]}" x2="{CAL_M["left"]}" '
+               f'y1="{CAL_M["top"]}" y2="{CAL_H - CAL_M["bottom"]}"/>')
+    svg.append(f'<line class="cal-diag" x1="{sx(0):.1f}" y1="{sy(0):.1f}" '
+               f'x2="{sx(1):.1f}" y2="{sy(1):.1f}"/>')
+
+    for b in bins:
+        if not b:
+            continue
+        mp = sum(pr["p"] for pr in b) / len(b)
+        mo = sum(pr["y"] for pr in b) / len(b)
+        r = round(min(12.0, max(3.0, 3 + 7 * math.log1p(len(b)) / math.log1p(max_count))), 1)
+        px, py = sx(mp), sy(mo)
+        svg.append(f'<circle class="cal-dot" cx="{px:.1f}" cy="{py:.1f}" r="{r}">'
+                   f'<title>{len(b)} votes, mean predicted {mp:.2f}, mean observed '
+                   f'{mo:.2f}</title></circle>')
+
+    body = (f'<svg width="{CAL_W}" height="{CAL_H}" viewBox="0 0 {CAL_W} {CAL_H}" '
+           f'class="axis cal-svg">{"".join(svg)}</svg>')
+    return body, brier
+
+
+def upset_gallery_html(basis: PCABasis, preds: list[dict], min_n_obs: int = 10,
+                       top_k: int = 5) -> str:
+    """Top ``top_k`` non-tie votes, restricted to predictions made once the
+    model had already seen >= ``min_n_obs`` duels (so "surprising" means
+    something), where the actual winner had the lowest predicted probability
+    -- the model was most confident about the loser and still lost."""
+    candidates = []
+    for pr in preds:
+        if pr["winner"] == "tie" or pr["n_obs_before"] < min_n_obs:
+            continue
+        p_winner = pr["p"] if pr["winner"] == "a" else (1.0 - pr["p"])
+        candidates.append((p_winner, pr))
+    candidates.sort(key=lambda t: t[0])
+    top = candidates[:top_k]
+    if not top:
+        return (f'<p class="chart-sub">No upsets to show yet -- need non-tie votes made '
+               f'once the model had already seen &ge;{min_n_obs} duels.</p>')
+
+    items = []
+    for p_winner, pr in top:
+        winner_ds = _paths_at_coeffs(
+            basis, pr["a_coeffs"] if pr["winner"] == "a" else pr["b_coeffs"])
+        loser_ds = _paths_at_coeffs(
+            basis, pr["b_coeffs"] if pr["winner"] == "a" else pr["a_coeffs"])
+        win_svg = _svg(winner_ds, STROKE_WIDTH, "mark film-mark upset-winner")
+        lose_svg = _svg(loser_ds, STROKE_WIDTH, "mark film-mark")
+        items.append(
+            f'<div class="upset-item"><div class="upset-pair">{win_svg}{lose_svg}</div>'
+            f'<div class="upset-cap">vote #{pr["idx"]} ({html.escape(pr["mode"])}) &mdash; '
+            f'model gave the winner P={p_winner * 100:.0f}%</div></div>')
+    return f'<div class="upset-row">{"".join(items)}</div>'
+
+
+def calibration_section_html(preds: list[dict], basis: PCABasis) -> str:
+    chart_svg, brier = calibration_chart_html(preds)
+    cal_caption = (f'<p class="chart-sub">Mean predicted vs. mean observed outcome, binned '
+                  f'into {N_CAL_BINS} equal-width bins of predicted probability (dot size = '
+                  'bin count); the dashed diagonal is perfect calibration. Early votes '
+                  'predict exactly 0.5 -- the flat prior, before any evidence. Brier score '
+                  f'(mean squared error of the sequential predictions): <b>{brier:.3f}</b>.</p>')
+    gallery = upset_gallery_html(basis, preds)
+    return (f'<h4>Reliability</h4>{chart_svg}{cal_caption}'
+           f'<h4>Upset gallery</h4>{gallery}')
+
+
+# ---------------------------------------------------------------------------
 # Eigenspace scatter data (JS renders it; see the script template below) --
 # seed points are shared across every size (same basis/session), the learned
 # preference and the duel candidates are per size bucket.
@@ -620,12 +1071,14 @@ def scatter_section_html(size: str) -> str:
 # One size-bucket section
 # ---------------------------------------------------------------------------
 
-def build_size_section(basis: PCABasis, votes: list[dict], size: str,
-                       z_max: float, steps: int, n_components: int) -> tuple[str, dict]:
-    """Returns (section_html, scatter_payload) -- the scatter payload is
+def build_size_section(basis: PCABasis, votes: list[dict], size: str, state: dict,
+                       z_max: float, steps: int, n_components: int
+                       ) -> tuple[str, dict, PreferenceModel]:
+    """Returns (section_html, scatter_payload, model) -- the scatter payload is
     collected by the caller into one JSON blob shared by every size section's
-    embedded JS."""
-    frames, model = build_frames_and_model(basis, votes)
+    embedded JS, and the model is collected for the cross-size comparison
+    section."""
+    frames, model, preds = build_frames_and_model(basis, votes)
     mean_g = basis.decode([0.0] * basis.n_components)
     best_g = basis.decode(model.best_coeffs())
     delta_svg = _delta_view_svg(mean_g, best_g)
@@ -637,11 +1090,17 @@ def build_size_section(basis: PCABasis, votes: list[dict], size: str,
     <h3>Mean &rarr; current best guess</h3>
     {header_pair_html(basis, model, votes)}
 
+    <h3>Small-size legibility</h3>
+    {legibility_strip_html(basis, model)}
+
     <h3>B&eacute;zier delta</h3>
     <div class="delta-wrap">
       {delta_svg}
       <p class="chart-sub delta-caption">Best mark (ink) over the population mean (grey).</p>
     </div>
+
+    <h3>Nearest seed</h3>
+    {seed_proximity_html(basis, model, state)}
 
     <h3>Evolution over votes</h3>
     {filmstrip_html(basis, frames)}
@@ -652,13 +1111,118 @@ def build_size_section(basis: PCABasis, votes: list[dict], size: str,
     gap means the axis had no interior peak at that checkpoint (an edge preference).</p>
     {trajectories_html(model, frames, basis)}
 
+    <h3>When to stop voting</h3>
+    {stopping_panel_html(frames, basis)}
+
+    <h3>Per-axis utility curves</h3>
+    {utility_curves_html(model, votes, basis, z_max, n_components)}
+
     <h3>Per-axis utility</h3>
     {utility_rows_html(basis, model, n_components, z_max, steps)}
+
+    <h3>Model calibration</h3>
+    {calibration_section_html(preds, basis)}
 
     {scatter_section_html(size)}
   </section>
 """
-    return section, build_scatter_payload(model, votes)
+    return section, build_scatter_payload(model, votes), model
+
+
+# ---------------------------------------------------------------------------
+# Cross-size comparison: a document-level section (not per-bucket) comparing
+# every size's learned preference, once >=2 buckets have votes. With fewer
+# than 2, a one-line note takes its place -- rendered inline with the rest of
+# ``build_html``'s footer material, since there's no section content to show.
+# ---------------------------------------------------------------------------
+
+def cross_size_overlay_svg(basis: PCABasis, sizes: list[str], models: dict) -> str:
+    layers = []
+    for i, size in enumerate(sizes):
+        color = SIZE_PALETTE[i % len(SIZE_PALETTE)]
+        ds = _paths_at_coeffs(basis, models[size].best_coeffs())
+        layers.append("".join(
+            f'<path d="{d}" fill="none" stroke="{color}" stroke-width="{STROKE_WIDTH}" '
+            f'stroke-miterlimit="10"/>' for d in ds))
+    body = "".join(layers)
+    return (f'<svg viewBox="{VIEWBOX}" preserveAspectRatio="xMidYMid meet" '
+          f'class="cross-overlay">{body}</svg>')
+
+
+ZDOT_W = 460
+ZDOT_ROW_H = 34
+ZDOT_M = {"left": 56, "right": 20}
+
+
+def cross_size_zstar_dotplot_html(sizes: list[str], models: dict, z_max: float) -> str:
+    reports = {size: {r["axis"]: r for r in models[size].axis_report()} for size in sizes}
+    axes_with_peaks = sorted({k for rep in reports.values() for k, r in rep.items() if r["peak"]})
+    if not axes_with_peaks:
+        return '<p class="chart-sub">No axis has an interior peak in any size bucket yet.</p>'
+
+    height = ZDOT_ROW_H * len(axes_with_peaks) + 30
+    sx = _lin_scale(-z_max, z_max, ZDOT_M["left"], ZDOT_W - ZDOT_M["right"])
+
+    svg = []
+    for t in _nice_ticks(-z_max, z_max, 5):
+        px = sx(t)
+        svg.append(f'<line class="grid" x1="{px:.1f}" x2="{px:.1f}" y1="10" y2="{height - 20}"/>')
+        svg.append(f'<text x="{px:.1f}" y="{height - 6}" text-anchor="middle">{t:g}</text>')
+    zx = sx(0.0)
+    svg.append(f'<line class="zero-line" x1="{zx:.1f}" x2="{zx:.1f}" y1="10" y2="{height - 20}"/>')
+
+    for row_i, k in enumerate(axes_with_peaks):
+        y = 24 + row_i * ZDOT_ROW_H
+        svg.append(f'<text x="4" y="{y + 4}" text-anchor="start" class="zdot-rowlabel">PC{k + 1}</text>')
+        for i, size in enumerate(sizes):
+            r = reports[size].get(k)
+            if r is None or not r["peak"]:
+                continue
+            color = SIZE_PALETTE[i % len(SIZE_PALETTE)]
+            z = max(-z_max, min(z_max, r["z_star"]))
+            std = r["zstar_std"]
+            px = sx(z)
+            lo, hi = sx(max(-z_max, z - std)), sx(min(z_max, z + std))
+            svg.append(f'<line class="zdot-err" x1="{lo:.1f}" x2="{hi:.1f}" '
+                      f'y1="{y:.1f}" y2="{y:.1f}" stroke="{color}"/>')
+            title = f'{html.escape(size)}: z&#42;={r["z_star"]:+.2f} &plusmn; {std:.2f}'
+            svg.append(f'<circle class="zdot-pt" cx="{px:.1f}" cy="{y:.1f}" r="4" '
+                      f'fill="{color}"><title>{title}</title></circle>')
+
+    return (f'<svg width="{ZDOT_W}" height="{height}" viewBox="0 0 {ZDOT_W} {height}" '
+          f'class="axis zdot-svg">{"".join(svg)}</svg>')
+
+
+def cross_size_section_html(basis: PCABasis, sizes: list[str], models: dict,
+                            z_max: float) -> str:
+    if len(sizes) < 2:
+        known = html.escape(sizes[0]) if sizes else "none"
+        return (f'<p class="sub cross-note">Cross-size comparison needs votes logged in '
+               f'&ge;2 size buckets (currently voted: {known}) -- once a second bucket has '
+               'votes, this section will overlay every bucket\'s best guess and compare '
+               'z&#42; per axis across sizes.</p>')
+
+    legend = "".join(
+        f'<span><span class="swatch" style="background:{SIZE_PALETTE[i % len(SIZE_PALETTE)]}">'
+        f'</span>{html.escape(size)}</span>'
+        for i, size in enumerate(sizes))
+    overlay = cross_size_overlay_svg(basis, sizes, models)
+    dotplot = cross_size_zstar_dotplot_html(sizes, models, z_max)
+    return f"""
+  <section class="size-section cross-section">
+    <h2>Cross-size comparison</h2>
+    <h3>Best guess per size, overlaid</h3>
+    <div class="delta-wrap">
+      {overlay}
+      <div class="legend-row cross-legend">{legend}</div>
+    </div>
+    <h3>z&#42; per axis, across sizes</h3>
+    <p class="chart-sub">One dot per size per axis with an interior peak in that bucket
+    (error bars &plusmn;1 zstar_std). Agreement across sizes means the preference doesn't
+    depend on display size; divergence means it does.</p>
+    {dotplot}
+  </section>
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -667,7 +1231,7 @@ def build_size_section(basis: PCABasis, votes: list[dict], size: str,
 
 def build_html(state: dict, basis: PCABasis, sections: list[str],
               sizes: list[str], by_size: dict, z_max: float,
-              scatter_payloads: dict) -> str:
+              scatter_payloads: dict, cross_html: str) -> str:
     seeds = html.escape(", ".join(basis.seed_files))
     total_votes = sum(len(by_size[s]) for s in sizes)
     nav = ""
@@ -794,6 +1358,47 @@ def build_html(state: dict, basis: PCABasis, sections: list[str],
   .axis.highlighting .duel-point {{ opacity:.15; }}
   .axis.highlighting .duel-point.active {{ opacity:1; r:6; }}
   .axis.highlighting .duel-link.active {{ opacity:.85; }}
+
+  h4 {{ font-size:12.5px; margin:12px 0 6px; color:#555; }}
+
+  .legib-row {{ display:flex; flex-wrap:wrap; gap:14px; align-items:flex-end; margin:6px 0; }}
+  .legib-cell {{ text-align:center; }}
+  .legib-mark {{ background:#fff; border:1px solid #eee; border-radius:3px; overflow:hidden; }}
+  .legib-svg {{ width:100%; height:100%; display:block; }}
+  .legib-cap {{ font-size:11px; color:#777; margin-top:3px; }}
+
+  .mark.mid {{ width:140px; height:158px; }}
+  .seedprox-row {{ display:flex; flex-wrap:wrap; gap:16px; margin:6px 0; }}
+  .seedprox-item {{ text-align:center; }}
+  .seedprox-label {{ font-size:12px; color:#555; margin-top:4px; }}
+
+  .ucurve-map {{ fill:none; stroke:{BEST_COLOR}; stroke-width:2.5; }}
+  .ucurve-draw {{ fill:none; stroke:{BEST_COLOR}; stroke-width:1; opacity:0.14; }}
+  .ucurve-zstar {{ stroke:#888; stroke-width:1.3; stroke-dasharray:3,2; }}
+  .tick-win {{ stroke:{INK_STROKE}; stroke-width:2.2; }}
+  .tick-lose {{ stroke:#b0b0b0; stroke-width:1.6; }}
+  .tick-tie {{ stroke:#b0b0b0; stroke-width:1.6; }}
+
+  .stop-line {{ fill:none; stroke:{TRAJ_COLOR}; stroke-width:2; }}
+  .stop-dot {{ fill:{TRAJ_COLOR}; stroke:#fff; stroke-width:1.3; }}
+
+  .cal-diag {{ stroke:#bbb; stroke-width:1.5; stroke-dasharray:4,3; }}
+  .cal-dot {{ fill:{TRAJ_COLOR}; opacity:.75; stroke:#fff; stroke-width:1; }}
+
+  .upset-row {{ display:flex; flex-wrap:wrap; gap:14px; margin:6px 0; }}
+  .upset-item {{ text-align:center; background:#fff; border:1px solid #eee; border-radius:6px;
+                padding:8px; }}
+  .upset-pair {{ display:flex; gap:6px; justify-content:center; }}
+  .upset-cap {{ font-size:11px; color:#666; margin-top:4px; max-width:220px; }}
+  .upset-winner {{ outline:2px solid {BEST_COLOR}; outline-offset:-2px; border-radius:3px; }}
+
+  .cross-overlay {{ display:block; width:220px; height:250px; background:#fff;
+                    border:1px solid #ddd; border-radius:6px; }}
+  .cross-legend {{ align-self:center; }}
+  .zdot-svg .zdot-rowlabel {{ fill:#444; font-weight:600; }}
+  .zdot-err {{ stroke-width:2.5; }}
+  .zdot-pt {{ stroke:#fff; stroke-width:1.3; }}
+  .cross-note {{ color:#666; }}
 </style></head>
 <body>
   <h1>Maker&rsquo;s Mark preferences</h1>
@@ -803,6 +1408,7 @@ def build_html(state: dict, basis: PCABasis, sections: list[str],
   highest-variance ones). Each section below is one size bucket.</p>
   {nav}
   {"".join(sections)}
+  {cross_html}
   <p class="sub" style="margin-top:20px">
     <b>peak</b> = an interior sweet spot (utility falls off on both sides);
     <b class="warn" style="color:#c0392b">edge</b> = preference keeps rising to the
@@ -1073,14 +1679,18 @@ def main() -> None:
 
     sections = []
     scatter_payloads = {}
+    models = {}
     for size in sizes_to_render:
-        section, payload = build_size_section(basis, by_size[size], size, args.z_max,
-                                              args.steps, args.components)
+        section, payload, model = build_size_section(basis, by_size[size], size, state,
+                                                      args.z_max, args.steps, args.components)
         sections.append(section)
         scatter_payloads[size] = payload
+        models[size] = model
+
+    cross_html = cross_size_section_html(basis, sizes_to_render, models, args.z_max)
 
     doc = build_html(state, basis, sections, sizes_to_render, by_size, args.z_max,
-                     scatter_payloads)
+                     scatter_payloads, cross_html)
     Path(args.out).write_text(doc, encoding="utf-8")
 
     counts = ", ".join(f"{s}: {len(by_size[s])}" for s in sizes_to_render)

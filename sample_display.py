@@ -20,6 +20,12 @@ coefficients, k-means clusters that 2D projection at a user-selected cluster
 count, and shows a knee plot (inertia vs. cluster count) for the same axis
 pair so you can judge how many groups the data actually supports.
 
+A third section is a full pairwise sample-similarity matrix -- the L2 distance
+between two samples' *entire* coefficient vectors (every component, not just
+an axis pair), which the 2D scatter above can't show. Rows/columns are
+ordered by average-linkage hierarchical clustering so any real families show
+up as dark blocks along the diagonal, distinct from one blob.
+
 Pure standard library; writes a single self-contained ``sample_eigen.html``.
 
     python3 sample_display.py                    # all components, sorted by distance
@@ -67,6 +73,62 @@ def _text_color(hexcolor: str) -> str:
     r, g, b = (int(hexcolor[i:i + 2], 16) for i in (1, 3, 5))
     yiq = (r * 299 + g * 587 + b * 114) / 1000.0
     return "#231f20" if yiq >= 140 else "#fbfbfb"
+
+
+def _seq_color(t: float) -> str:
+    """t in [0, 1] -> hex on a single-hue sequential ramp, light -> dark, in
+    the page's existing chart-blue family (KNEE_COLOR). Used for the
+    similarity matrix, where darker means more similar."""
+    t = max(0.0, min(1.0, t))
+    light = (0xf1, 0xf6, 0xfd)   # near-white, faint blue tint (most dissimilar)
+    dark = (0x0a, 0x2b, 0x54)    # deep navy, same hue family (most similar)
+    r = round(light[0] + (dark[0] - light[0]) * t)
+    g = round(light[1] + (dark[1] - light[1]) * t)
+    b = round(light[2] + (dark[2] - light[2]) * t)
+    return "#%02x%02x%02x" % (r, g, b)
+
+
+def _short_name(name: str) -> str:
+    """Abbreviate a sample origin filename for compact matrix headers."""
+    base = name[:-4] if name.endswith(".svg") else name
+    base = base[len("vector_"):] if base.startswith("vector_") else base
+    return base or name
+
+
+def _cluster_order(dist: list[list[float]]) -> list[int]:
+    """Average-linkage agglomerative clustering leaf order.
+
+    Simple O(n^3) implementation (recomputes each candidate cluster-pair's
+    average distance from the raw ``dist`` matrix on every merge) -- plenty
+    fast for the handful of dozens of samples this page deals with. Returns
+    a permutation of ``range(len(dist))`` such that members of the same
+    cluster end up contiguous, so real families read as diagonal blocks.
+    """
+    n = len(dist)
+    clusters: dict[int, list[int]] = {i: [i] for i in range(n)}
+    active = list(range(n))
+    next_id = n
+
+    def avg_dist(a_members: list[int], b_members: list[int]) -> float:
+        total = sum(dist[a][b] for a in a_members for b in b_members)
+        return total / (len(a_members) * len(b_members))
+
+    while len(active) > 1:
+        best = None
+        for x in range(len(active)):
+            for y in range(x + 1, len(active)):
+                ca, cb = active[x], active[y]
+                d = avg_dist(clusters[ca], clusters[cb])
+                if best is None or d < best[0]:
+                    best = (d, ca, cb)
+        _, ca, cb = best
+        merged = clusters[ca] + clusters[cb]
+        active.remove(ca)
+        active.remove(cb)
+        clusters[next_id] = merged
+        active.append(next_id)
+        next_id += 1
+    return clusters[active[0]]
 
 
 def _mark_pair_svg(mean_ds: list[str], sample_ds: list[str]) -> str:
@@ -154,6 +216,56 @@ def build_html(basis: PCABasis, pop: list, n_components: int, sort_mode: str,
         rows_data.append({"name": names[i], "dist": dist, "full": sample_ds,
                           "comps": comps_data, "coeffsFull": _round(coeffs)})
 
+    # --- pairwise sample-similarity matrix -----------------------------------
+    # Full-coefficient (all basis.n_components, not just the n_comp shown above)
+    # L2 distance between every pair of samples -- exact whole-shape distance
+    # by Parseval, since the components are orthonormal. Ordered by average-
+    # linkage hierarchical clustering so real families read as diagonal blocks,
+    # independent of this table's own row sort (`order`, above).
+    n_pop = len(pop)
+    pop_to_rowpos = {pop_i: pos for pos, pop_i in enumerate(order)}
+    full_dist = [[0.0] * n_pop for _ in range(n_pop)]
+    for i in range(n_pop):
+        ci = coeffs_list[i]
+        for j in range(i + 1, n_pop):
+            cj = coeffs_list[j]
+            d = math.sqrt(sum((ci[k] - cj[k]) ** 2 for k in range(basis.n_components)))
+            full_dist[i][j] = d
+            full_dist[j][i] = d
+    leaf_order = _cluster_order(full_dist)
+    max_dist = max((full_dist[i][j] for i in range(n_pop) for j in range(n_pop)),
+                   default=1.0) or 1.0
+
+    pair_row_idx = [pop_to_rowpos[i] for i in leaf_order]
+    pair_labels = [_short_name(names[i]) for i in leaf_order]
+    pair_dist = [[round(full_dist[leaf_order[a]][leaf_order[b]], 6)
+                 for b in range(n_pop)] for a in range(n_pop)]
+
+    matrix_col_head = "".join(
+        f'<th class="collabel"><span class="rot" title="{html.escape(names[leaf_order[b]])}">'
+        f'{html.escape(pair_labels[b])}</span></th>'
+        for b in range(n_pop)
+    )
+    matrix_rows = []
+    for a in range(n_pop):
+        cells = []
+        for b in range(n_pop):
+            d = full_dist[leaf_order[a]][leaf_order[b]]
+            sim = 1.0 - (d / max_dist)
+            fill = _seq_color(sim)
+            is_diag = a == b
+            title = (f"{names[leaf_order[a]]}" if is_diag else
+                     f"{names[leaf_order[a]]} vs {names[leaf_order[b]]}: Δ={d:.3f}")
+            cls = "paircell diag" if is_diag else "paircell"
+            cells.append(
+                f'<td class="{cls}" data-a="{a}" data-b="{b}" '
+                f'style="background:{fill}" title="{html.escape(title)}"></td>'
+            )
+        matrix_rows.append(
+            f'<tr><th class="rowlabel-sm" title="{html.escape(names[leaf_order[a]])}">'
+            f'{html.escape(pair_labels[a])}</th>{"".join(cells)}</tr>'
+        )
+
     var_pct = [basis.eigenvalues[k] / total_var * 100.0 for k in range(n_comp)]
     viz_data = {
         "meanDs": mean_ds, "nComp": n_comp, "varPct": var_pct, "rows": rows_data,
@@ -164,6 +276,10 @@ def build_html(basis: PCABasis, pop: list, n_components: int, sort_mode: str,
         "components": [_round(basis.components[k]) for k in range(basis.n_components)],
         "canvasW": CANVAS_W, "canvasH": CANVAS_H, "minHandle": MIN_HANDLE,
         "pathOrder": list(PATH_ORDER), "segments": {pid: SEGMENTS[pid] for pid in PATH_ORDER},
+        # Pairwise similarity matrix (leaf-clustered order). rowIdx[a] maps a
+        # leaf position to its index into DATA.rows above, so clicking cell
+        # (a, b) can pull each side's full sample straight out of `rows`.
+        "pairSim": {"rowIdx": pair_row_idx, "dist": pair_dist, "labels": pair_labels},
     }
     data_json = json.dumps(viz_data, separators=(",", ":")).replace("</", "<\\/")
     cluster_colors_json = json.dumps(CLUSTER_COLORS)
@@ -222,6 +338,35 @@ def build_html(basis: PCABasis, pop: list, n_components: int, sort_mode: str,
   <p class="sub">Needs at least 2 components to plot -- re-run with a larger -n.</p>
 """
 
+    matrix_section = f"""
+  <hr class="section-divider">
+  <h2>Pairwise sample similarity</h2>
+  <p class="sub">Every sample against every other, by the L2 distance between their
+  <b>full</b> coefficient vectors ({basis.n_components} components, not just the
+  {n_comp} shown above) &mdash; since the components are orthonormal this is exact
+  whole-shape distance (Parseval), not an approximation from a 2D projection. Rows and
+  columns are ordered by average-linkage hierarchical clustering (independent of this
+  page's other sort settings), so any real families of similar marks show up as dark
+  blocks along the diagonal rather than a uniform blob. Hover a cell for the exact
+  distance; click one to compare that pair in the panel above (a diagonal cell just
+  shows that one sample).</p>
+  <div class="simwrap">
+    <table class="simtable">
+      <thead><tr><th></th>{matrix_col_head}</tr></thead>
+      <tbody>
+        {"".join(matrix_rows)}
+      </tbody>
+    </table>
+  </div>
+  <p class="legend">
+    <span class="simramp"></span>
+    different (large &Delta;, light) &hellip; similar (small &Delta;, dark)
+    &nbsp;&middot;&nbsp; diagonal (&Delta;=0) is always darkest
+    &nbsp;&middot;&nbsp; column/row labels drop the <code>vector_</code>/<code>.svg</code>
+    boilerplate &mdash; hover a header for the full filename.
+  </p>
+"""
+
     script = _SCRIPT_TEMPLATE
     script = script.replace("__DATA__", data_json)
     script = script.replace("__CLUSTER_COLORS__", cluster_colors_json)
@@ -230,6 +375,7 @@ def build_html(basis: PCABasis, pop: list, n_components: int, sort_mode: str,
     script = script.replace("__VIEWBOX__", VIEWBOX)
     script = script.replace("__N_COMP__", str(n_comp))
     script = script.replace("__HAS_CLUSTERS__", "true" if n_comp >= 2 else "false")
+    script = script.replace("__PAIR_COLOR__", json.dumps(_seq_color(1.0)))
 
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -306,6 +452,22 @@ def build_html(basis: PCABasis, pop: list, n_components: int, sort_mode: str,
   .axis .knee-line {{ fill:none; stroke:var(--knee); stroke-width:2; }}
   .axis .knee-dot {{ fill:var(--knee); stroke:#fff; stroke-width:2; }}
   .axis .knee-dot.selected {{ fill:var(--ink); }}
+  .simwrap {{ overflow-x:auto; padding-bottom:4px; }}
+  table.simtable {{ border-collapse:collapse; }}
+  table.simtable th, table.simtable td {{ padding:0; }}
+  table.simtable thead th.collabel {{ height:64px; vertical-align:bottom; padding-bottom:2px; }}
+  table.simtable thead th.collabel .rot {{ display:inline-block; writing-mode:vertical-rl;
+                                           transform:rotate(180deg); font-size:9px; color:#666;
+                                           white-space:nowrap; }}
+  table.simtable th.rowlabel-sm {{ text-align:right; padding:0 6px 0 2px; font-size:9px;
+                                   font-weight:400; color:#666; white-space:nowrap;
+                                   vertical-align:middle; }}
+  table.simtable td.paircell {{ width:16px; height:16px; cursor:pointer; }}
+  table.simtable td.paircell.diag {{ box-shadow:inset 0 0 0 1px #fff; }}
+  table.simtable td.paircell:hover {{ outline:2px solid #999; outline-offset:-2px; }}
+  .simramp {{ display:inline-block; width:140px; height:12px; border-radius:2px;
+             vertical-align:-2px; margin-right:6px;
+             background:linear-gradient(to right, {_seq_color(0.0)}, {_seq_color(1.0)}); }}
 </style></head>
 <body>
   <div class="layout">
@@ -348,6 +510,7 @@ def build_html(basis: PCABasis, pop: list, n_components: int, sort_mode: str,
     </div>
   </div>
   {cluster_section}
+  {matrix_section}
   <script>
 {script}
   </script>
@@ -363,6 +526,7 @@ const STROKE_WIDTH = __STROKE_WIDTH__;
 const VIEWBOX = "__VIEWBOX__";
 const N_COMP = __N_COMP__;
 const HAS_CLUSTERS = __HAS_CLUSTERS__;
+const PAIR_COLOR = __PAIR_COLOR__;
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -408,6 +572,34 @@ document.querySelectorAll('table tbody').forEach(tbody => {
 });
 
 if (DATA.rows.length) renderSample(0);
+
+// Pairwise similarity matrix: cell (a, b) is a pair of *leaf* positions (the
+// matrix's own hierarchical-clustering order, independent of DATA.rows'
+// display sort) -- DATA.pairSim.rowIdx maps a leaf position back to its index
+// into DATA.rows, so both samples in the pair can be pulled straight out of it.
+function renderPairCompare(a, b) {
+  const ps = DATA.pairSim;
+  const rowA = DATA.rows[ps.rowIdx[a]], rowB = DATA.rows[ps.rowIdx[b]];
+  const d = ps.dist[a][b];
+  document.getElementById('bigmark').innerHTML = markSvg([
+    {ds: rowA.full, color: '#231f20', width: STROKE_WIDTH},
+    {ds: rowB.full, color: PAIR_COLOR, width: STROKE_WIDTH, opacity: 0.85},
+  ]);
+  document.getElementById('bigcaption').innerHTML =
+    `<b>${escapeHtml(rowA.name)}</b> (ink) vs. <b>${escapeHtml(rowB.name)}</b> (blue) ` +
+    `&middot; full-coefficient &Delta;=${d.toFixed(3)}`;
+}
+
+document.querySelectorAll('table.simtable tbody').forEach(tbody => {
+  tbody.addEventListener('click', e => {
+    const cell = e.target.closest('td.paircell');
+    if (!cell) return;
+    const a = +cell.dataset.a, b = +cell.dataset.b;
+    if (a === b) { renderSample(DATA.pairSim.rowIdx[a]); }
+    else { renderPairCompare(a, b); }
+    document.querySelector('.bigpanel').scrollIntoView({behavior: 'smooth', block: 'start'});
+  });
+});
 
 if (HAS_CLUSTERS) {
   // Decode a full coefficient vector to path "d" strings -- ports

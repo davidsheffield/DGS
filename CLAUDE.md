@@ -39,6 +39,8 @@ python genome.py             # GA demo: seeds from Samples/, breeds one child ->
 python3 eigen.py             # eigenshape demo: fit basis, check round-trip, breed -> eigen_demo.svg
 python3 eigen_display.py     # visualize the eigenshape basis -> eigenshapes.html
                              #   -n COMPONENTS / --sigma N / --steps N to tune the walk
+                             #   --sheet-sigma N / --sheet-steps N / --sheet-pairs 1x2,1x3
+                             #     for the two-axis morph sheets
 python3 sample_display.py    # compare seed samples to the mean, by eigen-axis -> sample_eigen.html
                              #   -n COMPONENTS / --sort distance|file / --max-k N / -o out.html
 python3 eigen_explorer.py    # interactive PC-slider tool -> eigen_explorer.html
@@ -142,8 +144,18 @@ writes a self-contained `eigenshapes.html` where each row is one principal compo
 the mark decoded at the population **mean** and stepped ±`--sigma` std-devs along that
 single axis (`decode()` with a coefficient vector that's zero except one entry), so a
 row isolates that eigenvector's deformation. Blue→grey→red colors the walk, an overlay
-column superimposes it, and each row is labeled with the component's variance share and
-σ. Refits from `Samples/` on each run (like creating a new evolver run), so it reflects
+column superimposes it, a **motion** column draws the same deformation as a
+displacement field (grey mean mark, red arrow per on-curve node toward its +σ
+position — one page-wide amplification factor, chosen from the median node
+displacement and stated in the legend, so arrow lengths stay comparable across
+rows), and each row is labeled with the component's variance share and σ. A
+**scree chart** up top (blue bars = per-component variance share, ink line =
+cumulative, one 0–100% axis) shows how many axes carry real signal, and
+**two-axis morph sheets** at the bottom decode the mark over a small (zᵢ, zⱼ)
+grid for chosen PC pairs (`--sheet-sigma` / `--sheet-steps` / `--sheet-pairs`,
+default PC1×2, 1×3, 2×3) — the interaction view no single-axis row can give.
+All still static Python-generated SVG, no client-side JS.
+Refits from `Samples/` on each run (like creating a new evolver run), so it reflects
 the current seeds — not any frozen run basis. Output is a generated artifact, left
 untracked like `eigen_demo.svg`.
 
@@ -177,8 +189,17 @@ and a pure-JS k-means (k-means++ init, 12 seeded restarts, deterministic per axi
 and-k so replotting is stable) clusters that 2D projection at a user-chosen `k`, colored
 with the dataviz skill's validated categorical palette (`CLUSTER_COLORS`). A knee plot
 (inertia vs. `k`, 1..`--max-k`) recomputes for the same axis pair and marks the selected
-`k`. Clicking a scatter point jumps the big panel to that sample. Generated artifact,
-left untracked like `eigenshapes.html`.
+`k`. Clicking a scatter point jumps the big panel to that sample.
+
+A third section is a **pairwise sample-similarity matrix**: the L2 distance
+between every two samples' *full* coefficient vectors (all components — exact
+whole-shape distance by Parseval, unlike the 2D scatter's projection), rows and
+columns ordered by a pure-stdlib average-linkage hierarchical clustering so
+real families read as dark diagonal blocks (single-hue blue ramp, darker =
+more similar; independent of `--sort`). Clicking a cell overlays that pair in
+the big panel (`renderPairCompare`; `pairSim.rowIdx` maps the matrix's leaf
+order back to `DATA.rows` indices, which is what keeps clicks correct under
+either table sort). Generated artifact, left untracked like `eigenshapes.html`.
 
 ## Eigenshape explorer (`eigen_explorer.py`)
 
@@ -327,14 +348,30 @@ JSON + JS, no server) with **one section per size bucket** that has votes
 - a header pairing the population **mean** mark with the **current best
   guess** (`best_coeffs()` — not `preferred_coeffs()`, whose edge values on
   unresolved axes are artifacts);
+- a **small-size legibility strip** — the best guess at 16/24/32/48/64px
+  (mirrors `eigen_explorer.py`'s preview strip);
 - a **Bézier delta view** — best mark in ink over the mean in grey, arrowless
   (the overlay itself is the delta);
+- a **nearest-seed proximity** view — the 3 seeds standardized-z-closest to
+  `best_coeffs()`, each overlaid under the best mark, with the median
+  seed↔seed distance as the yardstick for "close to an existing design vs.
+  genuinely new";
 - an **evolution filmstrip** (the model refit on vote-log prefixes — one model
   `observe()`d incrementally, IRLS warm-starts making the checkpoints cheap —
   decoded at each checkpoint);
 - **per-axis z\* trajectories** (small multiples of z* vs. vote count, shaded
   ±1 `zstar_std`, gaps where an axis had no interior peak rather than fake
   edge values);
+- a **"when to stop voting" panel** — `Σ_k zstar_std[k]·stds[k]` (exactly the
+  scheduler's axis-picking score, summed) vs. vote count at the filmstrip's
+  checkpoints; flattening = further duels are low-value;
+- **per-axis utility curves** — the MAP curve `U(z)=w_lin·z+w_quad·z²` (thick
+  green) per axis, ~20 thin posterior `sample_w` draws under it (the fan =
+  how sure the model is; Y-range clipped to the draws' 5–95th percentile so a
+  wild draw can't crush the scale), a dashed z\* line, and rug-style
+  **evidence ticks** from that axis's staircase duels (winner filled ink,
+  loser hollow grey, ties half-height; axis from the logged `axis` field or
+  inferred as the single differing coefficient);
 - **per-axis utility** — the overlay and the older stepped table side by side
   in one row, because the overlay alone didn't show enough on its own: an
   **overlay** (every step of its walk superimposed in a single SVG,
@@ -349,7 +386,14 @@ JSON + JS, no server) with **one section per size bucket** that has votes
   spread` with a peak/edge tag and a settled/unsettled tag
   (`SETTLED_ZSTD_STD`); a ramp legend covers both encodings (cell tint and
   overlay stroke both mean low→high learned preference along that axis's own
-  walk); and
+  walk);
+- a **model calibration** section — `build_frames_and_model` records each
+  vote's *sequential* prediction (`sigmoid(U(a)−U(b))`, computed before that
+  vote is observed): a 5-bin reliability chart (mean predicted vs. mean
+  observed, dot size = bin count, y=x reference, Brier score in the caption)
+  plus an **upset gallery** of the 5 non-tie votes (made once the model had
+  ≥10 observations) where the actual winner had the lowest predicted
+  probability — winner outlined green; and
 - an **eigenspace scatter** — the seed marks (grey), the population mean (open
   cross at the origin) and the learned preference (`best_coeffs()`, a green
   star) projected onto two user-chosen components (`PC# (x.x% var)` selects,
@@ -367,5 +411,11 @@ JSON + JS, no server) with **one section per size bucket** that has votes
   `.highlighting` class on the SVG root — click pins the highlight so the
   mouse can move away, and re-rendering (axis change / checkbox toggle)
   always resets the pin.
+
+After the size sections, a document-level **cross-size comparison** renders
+once ≥2 buckets have votes: every bucket's `best_coeffs()` mark overlaid (one
+categorical color per size, `SIZE_PALETTE`) and a z\*-per-axis dot plot across
+sizes (error bars ±1 `zstar_std`) — agreement means the preference is
+size-independent. With one voted bucket it degrades to a one-line note.
 
 Generated artifact, left untracked like `eigenshapes.html`.
