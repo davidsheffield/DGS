@@ -335,14 +335,21 @@ JSON + JS, no server) with **one section per size bucket** that has votes
 - **per-axis z\* trajectories** (small multiples of z* vs. vote count, shaded
   ±1 `zstar_std`, gaps where an axis had no interior peak rather than fake
   edge values);
-- **per-axis utility overlays** — one axis at a time, every step of its walk
-  superimposed in a single SVG, stroke-colored on a sequential green ramp
-  (`_util_ramp_color`, pale = low learned utility, deep = high, staying in the
-  page's existing green="best" hue family per the dataviz skill's
-  single-hue-sequential rule) and drawn low-utility-first so the preferred
-  shapes sit on top, with the z\* step stroked thicker; labeled
-  `z* = x.xx ± spread` with a peak/edge tag and a settled/unsettled tag
-  (`SETTLED_ZSTD_STD`), plus a small ramp legend; and
+- **per-axis utility** — the overlay and the older stepped table side by side
+  in one row, because the overlay alone didn't show enough on its own: an
+  **overlay** (every step of its walk superimposed in a single SVG,
+  stroke-colored on a sequential green ramp — `_util_ramp_color`, pale = low
+  learned utility, deep = high, staying in the page's existing green="best"
+  hue family per the dataviz skill's single-hue-sequential rule — drawn
+  low-utility-first so the preferred shapes sit on top, z\* step stroked
+  thicker), then the **stepped cells** (one mark per step, cell background
+  tinted white→green by that step's utility via `_util_bg`, a utility bar
+  under each mark, the z\*-nearest cell outlined `cell star`), then a
+  **profile** cell (the mark at z\*). Row label unchanged: `z* = x.xx ±
+  spread` with a peak/edge tag and a settled/unsettled tag
+  (`SETTLED_ZSTD_STD`); a ramp legend covers both encodings (cell tint and
+  overlay stroke both mean low→high learned preference along that axis's own
+  walk); and
 - an **eigenspace scatter** — the seed marks (grey), the population mean (open
   cross at the origin) and the learned preference (`best_coeffs()`, a green
   star) projected onto two user-chosen components (`PC# (x.x% var)` selects,
@@ -352,6 +359,13 @@ JSON + JS, no server) with **one section per size bucket** that has votes
   (both sides of every vote), colored by duel mode from the dataviz skill's
   categorical palette (skipping its green slot, reserved here for "the learned
   preference"), filled for the winner and hollow for the loser (both hollow on
-  a tie), each with a hover tooltip.
+  a tie), each with a hover tooltip. Every duel point carries `data-di`, and a
+  hidden, mode-colored, dashed `duel-link` line is pre-rendered per duel
+  (under the points, so links don't obscure dots); hovering or clicking a
+  point reveals its duel's link, enlarges both of that duel's points
+  (`.active`, r 4→6), and fades every other duel point (~0.15 opacity) via a
+  `.highlighting` class on the SVG root — click pins the highlight so the
+  mouse can move away, and re-rendering (axis change / checkbox toggle)
+  always resets the pin.
 
 Generated artifact, left untracked like `eigenshapes.html`.

@@ -26,18 +26,26 @@ narrow it with ``--size``). Each section has, top to bottom:
   preferred z\\* against vote count (shaded by its posterior ``zstar_std``, a
   zero line marking the mean, gaps where the axis had no interior peak yet),
   for the top ~8 axes by final utility span if there are many;
-* **per-axis utility overlays** -- one axis at a time, every step of the walk
+* **per-axis utility** -- both views side by side, since the overlay alone
+  didn't show enough on its own: an **overlay** (every step of the walk
   superimposed in a single SVG, each step's stroke colored on a sequential
-  green ramp (pale = low learned utility, deep = high -- the report's
-  existing green="best" hue family) and drawn low-utility-first so the
-  preferred shapes sit on top; the z\\* step is drawn slightly thicker.
-  Labeled with the axis's posterior spread (``z* = 0.8 +/- 0.3``) and a
-  settled/unsettled tag; and
+  green ramp -- pale = low learned utility, deep = high, the report's
+  existing green="best" hue family -- drawn low-utility-first so the
+  preferred shapes sit on top, the z\\* step drawn slightly thicker) beside
+  the older **stepped-cells table** (one mark per step, cell background
+  tinted white->green by that step's utility, a utility bar under each mark,
+  the z\\*-nearest cell outlined) and a **profile** cell (the mark at
+  z\\*). Labeled with the axis's posterior spread (``z* = 0.8 +/- 0.3``)
+  and a settled/unsettled tag; and
 * an **eigenspace scatter** -- the seed marks, the population mean, and the
   learned preference (``best_coeffs()``) plotted on two chosen components
   (selects labeled ``PC# (x.x% var)``), with an off-by-default checkbox to
   also plot every duel candidate this bucket has seen, colored by duel mode,
   filled for the winner and hollow for the loser (both hollow on a tie).
+  Hovering or clicking a duel candidate highlights its opponent -- a dashed
+  link line between the two, both points enlarged, every other duel point
+  faded to low opacity -- so you can tell which candidates actually dueled
+  each other.
 
 Refits from the log on each run, like ``eigen_display.py`` refits from
 ``Samples/``. Pure standard library; output is a generated artifact.
@@ -213,11 +221,23 @@ def _svg(path_ds: list[str], width: float, cls: str = "mark") -> str:
 
 def _util_ramp_color(norm: float) -> str:
     """norm in [0,1] -> pale sage (low learned utility) to deep green (high),
-    a single-hue sequential ramp per the dataviz skill (never a rainbow)."""
+    a single-hue sequential ramp per the dataviz skill (never a rainbow).
+    Used for the per-axis overlay's stroke color."""
     lo, hi = UTIL_RAMP_LO, UTIL_RAMP_HI
     r = round(lo[0] + (hi[0] - lo[0]) * norm)
     g = round(lo[1] + (hi[1] - lo[1]) * norm)
     b = round(lo[2] + (hi[2] - lo[2]) * norm)
+    return "#%02x%02x%02x" % (r, g, b)
+
+
+def _util_bg(norm: float) -> str:
+    """norm in [0,1] -> white (low utility) to green (high utility). Used for
+    the stepped-cells table's cell background -- a second, older encoding of
+    the same learned-utility quantity as ``_util_ramp_color``, restored
+    alongside the overlay because the overlay alone didn't read clearly."""
+    r = round((1 - norm) * 255 + norm * 0x1a)
+    g = round((1 - norm) * 255 + norm * 0x7f)
+    b = round((1 - norm) * 255 + norm * 0x37)
     return "#%02x%02x%02x" % (r, g, b)
 
 
@@ -417,9 +437,11 @@ def header_pair_html(basis: PCABasis, model: PreferenceModel, votes: list[dict])
 
 
 # ---------------------------------------------------------------------------
-# Per-axis utility overlays: the walk across one axis superimposed in a
-# single SVG, stroke-colored by learned utility, rather than a stepped-cells
-# table -- one figure per axis instead of one cell per step.
+# Per-axis utility overlay: the walk across one axis superimposed in a
+# single SVG, stroke-colored by learned utility -- one figure per axis
+# instead of one cell per step. Rendered alongside (not instead of) the
+# stepped-cells table below, since the overlay alone didn't show enough on
+# its own.
 # ---------------------------------------------------------------------------
 
 def _axis_overlay_svg(basis: PCABasis, k: int, std: float, lin: float, quad: float,
@@ -453,6 +475,11 @@ def _axis_overlay_svg(basis: PCABasis, k: int, std: float, lin: float, quad: flo
 
 def utility_rows_html(basis: PCABasis, model: PreferenceModel, n_components: int,
                       z_max: float, steps: int) -> str:
+    """One table: row label, the whole-walk overlay, the restored stepped
+    cells (tinted white->green by ``_util_bg``, a utility bar, the z*-nearest
+    cell outlined), then a profile cell -- the overlay and the stepped cells
+    are two encodings of the same learned-utility numbers, kept side by side
+    because the overlay on its own didn't show enough."""
     if steps < 3:
         steps = 3
     if steps % 2 == 0:
@@ -464,37 +491,69 @@ def utility_rows_html(basis: PCABasis, model: PreferenceModel, n_components: int
     report = model.axis_report()
     n_show = min(n_components, len(report))
 
+    col_head = "".join(
+        f'<th>{("mean" if abs(z) < 1e-9 else f"{z:+.2g}σ")}</th>' for z in zs
+    )
+
     rows = []
     for r in report[:n_show]:
         k = r["axis"]
         std = basis.stds[k]
+        lin, quad = r["lin"], r["quad"]
         z_star = r["z_star"]
-        overlay = _axis_overlay_svg(basis, k, std, r["lin"], r["quad"], z_star, zs)
+        overlay = _axis_overlay_svg(basis, k, std, lin, quad, z_star, zs)
+
+        us = [lin * z + quad * z * z for z in zs]
+        u_star = lin * z_star + quad * z_star * z_star
+        lo = min(us + [u_star])
+        span = (max(us + [u_star]) - lo) or 1.0
+        star_k = min(range(steps), key=lambda i: abs(zs[i] - z_star))
+
+        cells = []
+        for i, z in enumerate(zs):
+            norm = (us[i] - lo) / span
+            ds = _paths_at_coeffs(
+                basis, [z * std if j == k else 0.0 for j in range(basis.n_components)])
+            is_star = i == star_k
+            cls = "cell star" if is_star else "cell"
+            bar_h = round(2 + 22 * norm)
+            cells.append(
+                f'<td class="{cls}" style="background:{_util_bg(norm)}">'
+                f'{_svg(ds, STROKE_WIDTH)}'
+                f'<div class="bar"><i style="height:{bar_h}px"></i></div></td>')
 
         star_ds = _paths_at_coeffs(
             basis, [z_star * std if j == k else 0.0 for j in range(basis.n_components)])
         kind = "peak" if r["peak"] else "edge"
+        profile_cell = (
+            f'<td class="cell profile">{_svg(star_ds, STROKE_WIDTH)}'
+            f'<div class="ptag">{kind} @ {z_star:+.2f}&sigma;</div></td>')
+
         settled = r["peak"] and r["zstar_std"] < SETTLED_ZSTD_STD
         settle_cls = "settled" if settled else "unsettled"
         label = (f'<div class="pc">PC{k + 1}</div>'
                  f'<div class="star">z* = {z_star:+.2f} &plusmn; {r["zstar_std"]:.2f}</div>'
                  f'<div class="kind {kind}">{kind}</div>'
                  f'<div class="settle-tag {settle_cls}">{settle_cls}</div>')
-        rows.append(f"""
-      <div class="util-row">
-        <div class="util-label">{label}</div>
-        <div class="util-overlay">{overlay}</div>
-        <div class="util-profile">{_svg(star_ds, STROKE_WIDTH)}
-          <div class="ptag">{kind} @ {z_star:+.2f}&sigma;</div></div>
-      </div>""")
+
+        rows.append(
+            f'<tr><th class="rowlabel"><div class="util-label">{label}</div></th>'
+            f'<td class="cell overlay">{overlay}</td>'
+            f'{"".join(cells)}{profile_cell}</tr>')
 
     legend = (f'<div class="ramp-legend"><span class="ramp-swatch" '
              f'style="background:linear-gradient(to right, {_util_ramp_color(0.0)}, '
              f'{_util_ramp_color(1.0)})"></span>'
-             f'<span>low learned preference &rarr; high (each axis\'s own walk -- '
-             f'not comparable across axes)</span></div>')
+             f'<span>low learned preference &rarr; high, along each axis\'s own walk '
+             f'(not comparable across axes) -- encoded twice: the overlay\'s stroke '
+             f'color and the stepped cells\' background tint.</span></div>')
 
-    return f'<div class="util-rows">{"".join(rows)}</div>{legend}'
+    return f"""<table>
+    <thead><tr><th></th><th>overlay</th>{col_head}<th>profile</th></tr></thead>
+    <tbody>
+      {"".join(rows)}
+    </tbody>
+  </table>{legend}"""
 
 
 # ---------------------------------------------------------------------------
@@ -542,7 +601,9 @@ def scatter_section_html(size: str) -> str:
     origin) and this bucket's learned preference (green star, <code>best_coeffs()</code>)
     projected onto two chosen components. Turn on duel candidates to also see every mark
     this bucket has been shown, colored by duel mode -- filled for the winner, hollow for
-    the loser (both hollow on a tie).</p>
+    the loser (both hollow on a tie). Hover or click a duel point to highlight its
+    opponent -- a dashed link line joins the pair, both points enlarge, and every other
+    duel point fades.</p>
     <div class="cluster-controls">
       <label>X axis <select id="axisX-{sid}"></select></label>
       <label>Y axis <select id="axisY-{sid}"></select></label>
@@ -691,22 +752,25 @@ def build_html(state: dict, basis: PCABasis, sections: list[str],
   .settle-tag.unsettled {{ background:#f4ede3; color:#a06a1f; }}
   .mark {{ display:block; width:82px; height:92px; margin:2px auto 0; }}
 
-  .util-rows {{ display:flex; flex-direction:column; gap:10px; }}
-  .util-row {{ display:flex; align-items:center; gap:16px; background:#fff;
-              border:1px solid #eee; border-radius:6px; padding:10px 14px; }}
+  table {{ border-collapse:collapse; }}
+  thead th {{ font-weight:600; color:#555; font-size:12px; padding:4px 6px; text-align:center; }}
   .util-label {{ min-width:150px; }}
   .util-label .pc {{ font-weight:700; font-size:15px; }}
   .util-label .star {{ color:#1a7f37; font-size:12px; font-weight:600; }}
   .util-label .kind {{ font-size:11px; color:#888; }}
   .util-label .kind.edge {{ color:#c0392b; }}
+  .cell {{ vertical-align:middle; text-align:center; border:1px solid #eee; padding:4px; }}
+  .cell.star {{ outline:2px solid #1a7f37; outline-offset:-2px; }}
+  .cell.overlay {{ padding:6px; }}
   .util-overlay-svg {{ width:150px; height:170px; background:#fff; }}
-  .util-profile {{ text-align:center; }}
-  .util-profile .mark {{ width:82px; height:92px; background:#f4fbf6;
-                         border:1px solid #cfe9d8; border-radius:4px; }}
-  .util-profile .ptag {{ font-size:11px; color:#1a7f37; padding:2px 0 0; }}
+  .bar {{ height:26px; display:flex; align-items:flex-end; justify-content:center; }}
+  .bar i {{ display:block; width:60%; background:#1a7f37; opacity:.55; }}
+  .cell.profile {{ background:#f4fbf6; border-left:2px solid #cfe9d8; }}
+  .cell.profile .ptag {{ font-size:11px; color:#1a7f37; padding:2px 0 4px; }}
   .ramp-legend {{ display:flex; align-items:center; gap:8px; margin-top:10px;
-                 font-size:11px; color:#666; }}
-  .ramp-swatch {{ display:inline-block; width:80px; height:10px; border-radius:5px; }}
+                 font-size:11px; color:#666; max-width:60ch; }}
+  .ramp-swatch {{ display:inline-block; width:80px; height:10px; border-radius:5px;
+                 flex:none; }}
 
   .cluster-controls {{ display:flex; flex-wrap:wrap; gap:20px; align-items:center;
                        margin:10px 0 16px; font-size:13px; color:#444; }}
@@ -724,7 +788,12 @@ def build_html(state: dict, basis: PCABasis, sections: list[str],
   .axis .seed-point {{ fill:{SEED_COLOR}; stroke:#fff; stroke-width:1.5; cursor:default; }}
   .axis .mean-point line {{ stroke:{MEAN_MARKER_COLOR}; stroke-width:2; }}
   .axis .best-point {{ fill:{BEST_COLOR}; stroke:#fff; stroke-width:1.5; }}
-  .axis .duel-point {{ cursor:default; }}
+  .axis .duel-point {{ cursor:pointer; pointer-events:all; transition:opacity .12s; }}
+  .axis .duel-link {{ opacity:0; stroke-width:1.5; stroke-dasharray:4,3; pointer-events:none;
+                      transition:opacity .12s; }}
+  .axis.highlighting .duel-point {{ opacity:.15; }}
+  .axis.highlighting .duel-point.active {{ opacity:1; r:6; }}
+  .axis.highlighting .duel-link.active {{ opacity:.85; }}
 </style></head>
 <body>
   <h1>Maker&rsquo;s Mark preferences</h1>
@@ -798,12 +867,18 @@ function starPath(cx, cy, r) {
 
 const SCATTER_W = 460, SCATTER_H = 380, SCATTER_M = {left: 46, right: 16, top: 16, bottom: 40};
 
+// Which duel (by its "idx") is pinned, per size section -- reset on every
+// render (axis change / show-duels toggle), so a stale pin never survives
+// a redraw of a different projection.
+const pinnedDuel = {};
+
 function renderScatterFor(size) {
   const sid = size.replace(/[^A-Za-z0-9_-]/g, "_");
   const xk = +document.getElementById("axisX-" + sid).value;
   const yk = +document.getElementById("axisY-" + sid).value;
   const showDuels = document.getElementById("showDuels-" + sid).checked;
   const data = SIZE_DATA[size];
+  pinnedDuel[sid] = null;
 
   const seedPts = GLOBAL.seeds.map(s => [s.coeffs[xk], s.coeffs[yk]]);
   const bestPt = [data.best[xk], data.best[yk]];
@@ -839,6 +914,14 @@ function renderScatterFor(size) {
   svg += `<text class="label" x="${-(SCATTER_M.top + SCATTER_H - SCATTER_M.bottom) / 2}" y="12" text-anchor="middle" transform="rotate(-90)">PC${yk + 1} coefficient</text>`;
 
   if (showDuels) {
+    // Link lines first, so they paint *under* the point circles drawn next.
+    data.duels.forEach(d => {
+      const color = MODE_COLORS[d.mode] || MODE_COLORS.unspecified;
+      const ax = sx(d.a[xk]), ay = sy(d.a[yk]);
+      const bx = sx(d.b[xk]), by = sy(d.b[yk]);
+      svg += `<line class="duel-link" data-di="${d.idx}" x1="${ax.toFixed(1)}" y1="${ay.toFixed(1)}" ` +
+             `x2="${bx.toFixed(1)}" y2="${by.toFixed(1)}" stroke="${color}"/>`;
+    });
     data.duels.forEach(d => {
       [["a", d.a], ["b", d.b]].forEach(([side, c]) => {
         const px = sx(c[xk]), py = sy(c[yk]);
@@ -847,7 +930,7 @@ function renderScatterFor(size) {
         const filled = d.winner !== "tie" && isWinner;
         const outcome = d.winner === "tie" ? "tie" : (isWinner ? "winner" : "loser");
         const title = `vote #${d.idx}, mode ${d.mode}, ${outcome}\nPC${xk + 1}=${c[xk].toFixed(3)}, PC${yk + 1}=${c[yk].toFixed(3)}`;
-        svg += `<circle class="duel-point" cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="4" ` +
+        svg += `<circle class="duel-point" data-di="${d.idx}" cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="4" ` +
                `fill="${filled ? color : "none"}" stroke="${color}" stroke-width="1.5">` +
                `<title>${escapeHtml(title)}</title></circle>`;
       });
@@ -874,8 +957,41 @@ function renderScatterFor(size) {
     svg += `<path class="best-point" d="${starPath(px, py, 10)}"><title>${escapeHtml(title)}</title></path>`;
   }
 
-  document.getElementById("scatter-" + sid).innerHTML =
+  const scatterEl = document.getElementById("scatter-" + sid);
+  scatterEl.innerHTML =
     `<svg width="${SCATTER_W}" height="${SCATTER_H}" viewBox="0 0 ${SCATTER_W} ${SCATTER_H}" class="axis">${svg}</svg>`;
+
+  if (showDuels) {
+    const svgEl = scatterEl.querySelector("svg");
+    const points = svgEl.querySelectorAll(".duel-point");
+    const links = svgEl.querySelectorAll(".duel-link");
+
+    const applyHighlight = di => {
+      if (di === null) {
+        svgEl.classList.remove("highlighting");
+        points.forEach(p => p.classList.remove("active"));
+        links.forEach(l => l.classList.remove("active"));
+        return;
+      }
+      svgEl.classList.add("highlighting");
+      points.forEach(p => p.classList.toggle("active", +p.dataset.di === di));
+      links.forEach(l => l.classList.toggle("active", +l.dataset.di === di));
+    };
+
+    points.forEach(p => {
+      p.addEventListener("mouseenter", () => {
+        if (pinnedDuel[sid] === null) applyHighlight(+p.dataset.di);
+      });
+      p.addEventListener("mouseleave", () => {
+        if (pinnedDuel[sid] === null) applyHighlight(null);
+      });
+      p.addEventListener("click", () => {
+        const di = +p.dataset.di;
+        pinnedDuel[sid] = pinnedDuel[sid] === di ? null : di;
+        applyHighlight(pinnedDuel[sid]);
+      });
+    });
+  }
 
   const legendBits = [
     '<span><span class="swatch seed-swatch"></span>seed</span>',
@@ -887,6 +1003,7 @@ function renderScatterFor(size) {
       legendBits.push(`<span><span class="swatch" style="background:${MODE_COLORS[m]}"></span>${m}</span>`);
     });
     legendBits.push("<span>filled = winner &middot; hollow = loser/tie</span>");
+    legendBits.push("<span>hover or click a duel point to highlight its opponent</span>");
   }
   document.getElementById("legend-" + sid).innerHTML = legendBits.join("");
 }
