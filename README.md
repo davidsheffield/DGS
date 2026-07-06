@@ -357,3 +357,8 @@ The constants near the top of `server.py` are the only knobs:
 - The server binds to `127.0.0.1` only — not reachable from the network.
 - Pairs are drawn uniformly at random with replacement, so the same pair can recur. That's intentional — repeated comparisons improve ranking stability.
 - Filenames in vote requests are validated against the startup directory listing, so path traversal isn't possible.
+
+## License
+
+Copyright (c) 2026 David G. Sheffield. All rights reserved.
+See [`LICENSE`](LICENSE) for the full terms.
