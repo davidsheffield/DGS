@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A Maker's Mark — the geometry of a signature</title>
+<meta name="description" content="The DS maker's mark: from a hand-drawn signature to an eigenvector decomposition and a preference-learning comparer.">
+<style>
+  :root{
+    --paper:#f4efe3;
+    --paper-2:#ece2cf;
+    --panel:#faf6ec;
+    --ink:#221f1d;
+    --ink-soft:#5d564d;
+    --ink-faint:#8a8175;
+    --rust:#b0561f;
+    --rust-deep:#8a4015;
+    --blue:#37628f;
+    --red:#bb3b2b;
+    --line:rgba(34,31,29,.14);
+    --line-strong:rgba(34,31,29,.28);
+    --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color-scheme:light;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);
+    font-family:var(--sans);font-size:18px;line-height:1.7;
+    -webkit-font-smoothing:antialiased;overflow-x:hidden;
+  }
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+  .narrow{max-width:680px}
+  h1,h2,h3{font-family:var(--serif);font-weight:600;line-height:1.08;letter-spacing:-.01em;margin:0}
+  p{margin:0 0 1.1em}
+  a{color:var(--rust-deep)}
+  .eyebrow{
+    font-family:var(--sans);font-size:.72rem;font-weight:700;letter-spacing:.22em;
+    text-transform:uppercase;color:var(--rust);margin:0 0 1.1rem;
+  }
+  section{padding:96px 0;position:relative}
+  section + section{border-top:1px solid var(--line)}
+  .lede{font-size:1.28rem;line-height:1.55;color:var(--ink);font-family:var(--serif)}
+  .muted{color:var(--ink-soft)}
+
+  /* reveal */
+  .reveal{opacity:0;transform:translateY(22px);transition:opacity .8s ease,transform .8s ease}
+  .reveal.in{opacity:1;transform:none}
+
+  /* ---- hero ---- */
+  .hero{
+    min-height:100svh;display:flex;flex-direction:column;justify-content:center;align-items:center;
+    text-align:center;padding:80px 24px 64px;
+    background:
+      radial-gradient(120% 90% at 50% 8%,rgba(176,86,31,.08),transparent 60%),
+      var(--paper);
+  }
+  .hero .mark-hero{width:min(46vw,340px);aspect-ratio:110/124;margin-bottom:8px}
+  .hero h1{font-size:clamp(2.6rem,7vw,5rem);margin:.2em 0 .35em}
+  .hero .sub{max-width:560px;font-size:1.18rem;color:var(--ink-soft);margin:0 auto}
+  .scrollcue{margin-top:56px;font-size:.72rem;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-faint);
+    animation:bob 2.4s ease-in-out infinite}
+  @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(7px)}}
+
+  /* draw-on animation — one stroke at a time, in the order I'd write them.
+     dasharray gap (200) is wider than the pathLength (100) so the dash pattern
+     can't wrap back onto the far endpoint and leave a round-cap dot there. */
+  .draw path{stroke-dasharray:100 200;stroke-dashoffset:100;animation:draw 1.05s cubic-bezier(.6,.02,.3,1) forwards}
+  .draw path:nth-child(2){animation-delay:.15s}   /* D:  the vertical line — drawn first */
+  .draw path:nth-child(3){animation-delay:1.275s}  /* DG: drawn second */
+  .draw path:nth-child(1){animation-delay:2.4s}  /* GS: drawn third */
+  @keyframes draw{to{stroke-dashoffset:0}}
+
+  svg{display:block}
+  .mark svg{width:100%;height:100%;overflow:visible}
+
+  /* ---- the mark ---- */
+  .mark-feature{display:grid;grid-template-columns:minmax(0,300px) 1fr;gap:56px;align-items:center}
+  .mark-feature .plate{
+    background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:34px;box-shadow:0 18px 40px -28px rgba(34,31,29,.5);
+  }
+  .plate .mark{aspect-ratio:110/124}
+  .stroke-facts{display:flex;gap:26px;margin-top:26px;flex-wrap:wrap}
+  .stroke-facts b{font-family:var(--serif);font-size:1.7rem;display:block;line-height:1;color:var(--rust-deep)}
+  .stroke-facts span{font-size:.82rem;color:var(--ink-soft);letter-spacing:.02em}
+
+  /* ---- use photos ---- */
+  .photos{display:grid;grid-template-columns:1fr 1fr;gap:26px;margin-top:44px}
+  figure{margin:0}
+  .photos img{width:100%;height:420px;object-fit:cover;border-radius:12px;display:block;
+    box-shadow:0 20px 44px -26px rgba(34,31,29,.6)}
+  figcaption{margin-top:.7rem;font-size:.9rem;color:var(--ink-soft);font-style:italic}
+
+  /* ---- samples wall ---- */
+  .wall{display:grid;grid-template-columns:repeat(auto-fill,minmax(76px,1fr));gap:10px;margin-top:40px}
+  .wall .chip{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:8px;
+    aspect-ratio:1;display:flex;align-items:center;justify-content:center;
+    transition:transform .35s ease,box-shadow .35s ease}
+  .wall .chip:hover{transform:translateY(-4px) rotate(-1deg);box-shadow:0 14px 26px -16px rgba(34,31,29,.55)}
+  .wall .chip img{max-width:100%;max-height:100%;mix-blend-mode:multiply;filter:contrast(1.05)}
+
+  /* ---- conversion strip ---- */
+  .convo{display:flex;flex-wrap:wrap;gap:18px;margin-top:40px;justify-content:center}
+  .convo .pair{display:flex;align-items:center;gap:14px;background:var(--panel);
+    border:1px solid var(--line);border-radius:12px;padding:16px 20px}
+  .convo .cell{width:96px;height:108px;display:flex;align-items:center;justify-content:center}
+  .convo .cell img{max-width:100%;max-height:100%;mix-blend-mode:multiply}
+  .convo .arrow{color:var(--rust);font-size:1.5rem}
+  .convo .lbl{position:absolute;font-size:.66rem;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint)}
+  .cellwrap{position:relative;display:flex;flex-direction:column;align-items:center;gap:6px}
+  .cellwrap span{font-size:.66rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-faint)}
+
+  /* ---- eigen ---- */
+  .scree{display:flex;align-items:flex-end;gap:6px;height:170px;margin:8px 0 6px;
+    padding:0 2px;border-bottom:2px solid var(--line-strong)}
+  .scree .bar{flex:1;background:linear-gradient(var(--rust),var(--rust-deep));border-radius:3px 3px 0 0;
+    position:relative;min-height:2px;transition:height 1s cubic-bezier(.5,0,.2,1)}
+  .scree .bar span{position:absolute;top:-20px;left:0;right:0;text-align:center;font-size:.62rem;color:var(--ink-soft)}
+  .scree-x{display:flex;gap:6px;padding:0 2px}
+  .scree-x div{flex:1;text-align:center;font-size:.62rem;color:var(--ink-faint)}
+
+  .ghost{opacity:.16}
+
+  .overlays{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:18px;margin-top:40px}
+  .overlays .ov{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 16px 12px}
+  .overlays .ov .mark{aspect-ratio:110/124}
+  .overlays .ov h4{margin:10px 0 2px;font-family:var(--serif);font-weight:600;font-size:1rem}
+  .overlays .ov p{margin:0;font-size:.78rem;color:var(--ink-soft)}
+
+  .morph{display:grid;grid-template-columns:1fr minmax(0,300px);gap:44px;align-items:center;margin-top:46px}
+  .pad{position:relative;aspect-ratio:1;background:var(--panel);border:1px solid var(--line);
+    border-radius:16px;padding:10px;touch-action:none;cursor:crosshair;overflow:hidden}
+  .pad .tiles{position:absolute;inset:10px;display:grid;grid-template-columns:repeat(5,1fr);
+    grid-template-rows:repeat(5,1fr);gap:2px}
+  .pad .tiles .mark{opacity:.5;transition:opacity .2s}
+  .pad .cross{position:absolute;width:16px;height:16px;border:2px solid var(--rust);border-radius:50%;
+    transform:translate(-50%,-50%);pointer-events:none;box-shadow:0 0 0 4px rgba(176,86,31,.18)}
+  .pad .axlabel{position:absolute;font-size:.62rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint)}
+  .morph .live{aspect-ratio:110/124;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px}
+
+  /* ---- comparer ---- */
+  .duel{display:grid;grid-template-columns:1fr auto 1fr;gap:22px;align-items:center;margin-top:44px}
+  .cand{background:var(--panel);border:2px solid var(--line);border-radius:16px;padding:30px;cursor:pointer;
+    transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease}
+  .cand:hover{transform:translateY(-5px);border-color:var(--rust);box-shadow:0 22px 44px -26px rgba(176,86,31,.6)}
+  .cand .mark{aspect-ratio:110/124}
+  .cand.pick{border-color:var(--rust);animation:pop .4s ease}
+  @keyframes pop{40%{transform:scale(1.05)}}
+  .vs{font-family:var(--serif);font-style:italic;color:var(--ink-faint);font-size:1.3rem}
+  .duel-q{text-align:center;font-family:var(--serif);font-size:1.3rem;margin-top:30px}
+  .tally{text-align:center;color:var(--ink-soft);font-size:.9rem;margin-top:10px}
+  .tally b{color:var(--rust-deep)}
+
+  footer{padding:80px 0 100px;text-align:center;color:var(--ink-soft)}
+  footer .mark{width:78px;aspect-ratio:110/124;margin:0 auto 22px}
+  footer p{font-size:.92rem}
+
+  @media(max-width:820px){
+    body{font-size:17px}
+    section{padding:72px 0}
+    .mark-feature,.morph{grid-template-columns:1fr;gap:30px}
+    .morph .live{max-width:240px;margin:0 auto}
+    .photos{grid-template-columns:1fr}
+    .photos img{height:300px}
+    .duel{grid-template-columns:1fr;gap:14px}
+    .vs{text-align:center}
+  }
+</style>
+</head>
+<body>
+
+<!-- HERO -->
+<header class="hero">
+  <div class="mark mark-hero" id="hero-mark"></div>
+  <p class="eyebrow" style="margin-top:20px">My Maker's Mark</p>
+  <h1>A signature<br>of my work</h1>
+  <p class="sub">The mark I add to objects I make and the tool to find the versions of it I like best.</p>
+  <div class="scrollcue">Scroll ↓</div>
+</header>
+
+<!-- THE MARK -->
+<section id="mark">
+  <div class="wrap mark-feature">
+    <div class="plate reveal">
+      <div class="mark" id="feature-mark"></div>
+    </div>
+    <div class="reveal">
+      <p class="eyebrow">The mark</p>
+      <h2 style="font-size:clamp(1.8rem,4vw,2.6rem);margin-bottom:.5em">A monogram in three strokes</h2>
+      <p>My initials with the three letters—<b>D</b>, <b>G</b>, <b>S</b>—intertwined into one symbol based on my handwriting.</p>
+      <p class="muted">But I never write is quite the same way twice. Sometimes I like it more and other times less. I wanted a standardize form that I can use as a template.</p>
+      <div class="stroke-facts">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- WHERE IT LIVES -->
+<section id="use">
+  <div class="wrap narrow reveal">
+    <p class="eyebrow">Where it lives</p>
+    <h2 style="font-size:clamp(1.8rem,4vw,2.6rem);margin-bottom:.5em">I put it on the things I make</h2>
+    <p class="lede">I engrave, carve, embroider, etch, or stamp it onto objects I make along with the year. That way I can see when I made it.</p>
+  </div>
+  <div class="wrap photos reveal">
+    <figure>
+      <img src="assets/utensil_caddy.jpg" alt="DS mark wood-burned into an oak utensil caddy, dated 2024" loading="lazy">
+      <figcaption>Carved into a cherry utensil caddy in 2024.</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/grocery_bag.jpg" alt="DS mark hand-embroidered on a black canvas grocery bag, dated 2025" loading="lazy">
+      <figcaption>Embroidered on a canvas grocery bag in 2025.</figcaption>
+    </figure>
+  </div>
+  <div class="wrap narrow reveal">
+    <p class="muted">There is significant variation is how I write the monogram as a guide that is amplified as it is permantly added to the object by hand.</p>
+  </div>
+</section>
+
+<!-- FROM HAND TO CURVE -->
+<section id="trace">
+  <div class="wrap narrow reveal">
+    <p class="eyebrow">From hand to curve</p>
+    <h2 style="font-size:clamp(1.8rem,4vw,2.6rem);margin-bottom:.5em">Thirty-eight signatures, traced</h2>
+    <p>To study the mark, I wrote it hundreds of times. I chose the few I liked—38 versions of the monogram. I scanned the pages in, created high contrast images of the marks I liked, and traced each one into the same three Bézier paths—the same strokes and control points, only with differing positions. That skeleton makes the samples comparable: every mark becomes the same 49 numbers, just with different values.</p>
+  </div>
+
+  <div class="wrap reveal">
+    <div class="convo" id="convo"></div>
+    <p class="muted" style="text-align:center;font-size:.9rem;margin-top:20px">Each ink scan (left) traced to a clean vector (right). Same topology every time.</p>
+  </div>
+
+  <div class="wrap reveal" style="margin-top:20px">
+    <p class="muted" style="text-align:center;font-size:.9rem;margin-bottom:0">The full set — thirty-eight times my hand tried to draw the same two letters:</p>
+    <div class="wall" id="wall"></div>
+  </div>
+</section>
+
+<!-- EIGENDEFORMATION -->
+<section id="eigen">
+  <div class="wrap narrow reveal">
+    <p class="eyebrow">Manipulating the shapes</p>
+    <h2 style="font-size:clamp(1.8rem,4vw,2.6rem);margin-bottom:.5em">The eigenbasis of my mark</h2>
+    <p>With every monogram converted to consistent Bézier paths, I ran a principal-component analysis of how the set differs from the mean shape. This gave eigenvectors of how my monograms deform from the mean. Rather than independently varying the control points, which results in unnatural shapes, I can use the eigendeformations to modify the shapes in ways that have more or less of different characteristics of how I write my maker's mark.</p>
+    <p class="muted">The first three eigenvectors account for about <b>63%</b> of everything that differs between my monograms. Below, each bar is one eigendeformation's share of the variation.</p>
+  </div>
+
+  <div class="wrap reveal">
+    <div class="scree" id="scree"></div>
+    <div class="scree-x" id="scree-x"></div>
+  </div>
+
+  <div class="wrap narrow reveal" style="margin-top:64px">
+    <h3 style="font-size:1.4rem;margin-bottom:.4em">Each axis, stepped ±2σ</h3>
+    <p class="muted">The four eigendeformations with the most variation, each walked below→above the mean and superimposed. Blue is low, red is high.</p>
+  </div>
+  <div class="wrap">
+    <div class="overlays reveal" id="overlays"></div>
+  </div>
+
+  <div class="wrap narrow reveal" style="margin-top:64px">
+    <h3 style="font-size:1.4rem;margin-bottom:.4em">Two axes at once</h3>
+    <p class="muted">Move through the plane of the first two eigendeformations.</p>
+  </div>
+  <div class="wrap">
+    <div class="morph reveal">
+      <div class="pad" id="pad">
+        <div class="tiles" id="pad-tiles"></div>
+        <div class="cross" id="pad-cross" style="left:50%;top:50%"></div>
+        <div class="axlabel" style="left:12px;top:50%;transform:translateY(-50%) rotate(-90deg)">Eigenvector 2</div>
+        <div class="axlabel" style="left:50%;bottom:12px;transform:translateX(-50%)">Eigenvector 1</div>
+      </div>
+      <div class="mark live" id="morph-live"></div>
+    </div>
+  </div>
+</section>
+
+<!-- COMPARER -->
+<section id="compare">
+  <div class="wrap narrow reveal">
+    <p class="eyebrow">The comparere</p>
+    <h2 style="font-size:clamp(1.8rem,4vw,2.6rem);margin-bottom:.5em">Deciding on the shape I like best</h2>
+    <p>I built a tool that lets me choose between candidate monograms. The candidates are generated using the eigenbasis with past decisions influencing what I'm shown next.</p>
+    <p class="muted">There are always two options that I need to select from. A simple, snap decision. Based my answers, it triangulates the shape I like most. Try a few:</p>
+  </div>
+  <div class="wrap">
+    <div class="duel reveal">
+      <div class="cand" id="cand-a" data-side="a"><div class="mark"></div></div>
+      <div class="vs">vs</div>
+      <div class="cand" id="cand-b" data-side="b"><div class="mark"></div></div>
+    </div>
+    <p class="tally" id="tally"></p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="mark" id="foot-mark"></div>
+    <p class="muted">© 2026 David G Sheffield. The DGS maker's mark shown here is the personal trademark of David G Sheffield. All rights reserved.</p>
+  </div>
+</footer>
+
+<script id="data" type="application/json">{"viewbox":[0,0,110,124],"mean":{"GS":"M98.5,16.55C91.85,21.11,79.28,30.7,71.49,36.38C57.1,46.89,43.87,59.59,61.06,56.78C75.08,54.5,74.12,61.72,44.66,81.96C25.05,95.43,8.71,110.6,13.34,117.89","D":"M44.28,15.14C42.57,19.79,41.72,31.22,43.1,38.27","DG":"M20.59,11.35C49.86,2.26,115.95,-6.68,44.28,44.13C10.03,68.41,-1.29,89.76,24.55,82.3C29.72,80.8,41.02,77.22,48.67,75.14"},"scree":[0.39283433166560694,0.14138549717100454,0.09217878878835264,0.08430561869442137,0.04968487564159206,0.036737414471950496,0.03105868595067853,0.028623264817362278,0.023886577118365563,0.020985737363191273,0.016085878676264702,0.013098283704352983,0.01125170227954562,0.008265555545566515,0.0071051759199640616,0.006627614263112997,0.005522180413576586,0.005261945397545212,0.004410936498319162,0.004041858828113363,0.0028971482424224575,0.002720901334976772,0.002169877050735369,0.001975140647538667,0.0015245004951719016,0.0012056555032826646,0.0008067532067939604,0.0007439675533662977,0.0005722254885238675,0.0005535111527338774,0.00044188505400412684,0.0003843448754445534,0.0002572647660659104,0.00017940264231801234,0.00011033216736776827,7.627897916547834e-05,2.888763120132774e-05],"pcs":[{"idx":0,"var":0.39283433166560694,"steps":[{"z":-2.4,"d":{"GS":"M99.34,17.89C90.7,22.65,81.09,30.85,73.88,36.06C59.02,46.79,43.12,60.14,63.7,58.22C81.26,56.57,74.45,65.71,45.89,86.18C25.31,100.93,14.4,111.21,18.68,115.89","D":"M40.98,14.8C37.94,16.29,38.27,31.91,38.84,41.53","DG":"M7.96,10.39C129.93,-15.8,81.08,18.57,33.58,52.73C-3.02,79.04,3.38,90.22,22.81,84.87C28.97,83.17,39.32,80.73,47.56,78.8"}},{"z":-1.6,"d":{"GS":"M99.06,17.44C91.08,22.14,80.48,30.8,73.08,36.16C58.38,46.82,43.36,60.01,62.82,57.74C79.2,55.83,74.34,64.38,45.48,84.77C25.22,99.09,12.5,111,16.9,116.55","D":"M42.08,14.91C39.48,17.46,39.42,31.68,40.26,40.44","DG":"M12.17,10.71C103.24,-9.78,92.68,10.11,37.14,49.86C1.33,75.5,1.82,90.05,23.39,84.01C29.22,82.38,39.89,79.56,47.93,77.58"}},{"z":-0.8,"d":{"GS":"M98.78,16.99C91.47,21.62,79.88,30.75,72.29,36.27C57.74,46.85,43.62,59.82,61.94,57.26C77.14,55.14,74.23,63.05,45.07,83.37C25.13,97.26,10.61,110.8,15.12,117.22","D":"M43.18,15.02C41.03,18.63,40.57,31.45,41.68,39.35","DG":"M16.38,11.03C76.55,-3.76,104.3,1.7,40.71,47C5.68,71.95,0.26,89.89,23.97,83.15C29.47,81.59,40.45,78.39,48.3,76.36"}},{"z":0.0,"d":{"GS":"M98.5,16.55C91.85,21.11,79.28,30.7,71.49,36.38C57.1,46.89,43.87,59.59,61.06,56.78C75.08,54.5,74.12,61.72,44.66,81.96C25.05,95.43,8.71,110.6,13.34,117.89","D":"M44.28,15.14C42.57,19.79,41.72,31.22,43.1,38.27","DG":"M20.59,11.35C49.86,2.26,115.95,-6.68,44.28,44.13C10.03,68.41,-1.29,89.76,24.55,82.3C29.72,80.8,41.02,77.22,48.67,75.14"}},{"z":0.8,"d":{"GS":"M98.22,16.1C92.23,20.59,78.68,30.64,70.7,36.49C56.46,46.92,44.13,59.3,60.18,56.31C73.01,53.91,74.01,60.4,44.25,80.55C24.97,93.6,6.81,110.4,11.57,118.56","D":"M45.37,15.25C44.12,20.96,42.86,30.99,44.52,37.18","DG":"M24.8,11.67C23.17,8.28,127.62,-15.03,47.84,41.27C14.38,64.88,-2.83,89.64,25.13,81.44C29.97,80.02,41.58,76.05,49.05,73.92"}},{"z":1.6,"d":{"GS":"M97.95,15.65C92.62,20.08,78.08,30.59,69.9,36.6C55.83,46.95,44.38,58.97,59.3,55.83C70.95,53.38,73.9,59.08,43.84,79.14C24.89,91.79,4.91,110.2,9.79,119.22","D":"M46.47,15.36C45.66,22.13,44.01,30.76,45.94,36.09","DG":"M29.01,11.99C-3.51,14.3,139.32,-23.34,51.41,38.4C18.74,61.35,-4.37,89.54,25.71,80.58C30.22,79.24,42.14,74.88,49.42,72.69"}},{"z":2.4,"d":{"GS":"M97.67,15.21C93,19.56,77.47,30.54,69.11,36.71C55.19,46.98,44.63,58.58,58.41,55.35C68.9,52.89,73.79,57.76,43.43,77.73C24.82,89.97,3.01,110,8.01,119.89","D":"M47.57,15.47C47.21,23.3,45.16,30.53,47.36,35.01","DG":"M33.22,12.31C-30.2,20.33,151.04,-31.61,54.98,35.54C23.1,57.82,-5.91,89.45,26.29,79.73C30.47,78.47,42.71,73.71,49.79,71.47"}}]},{"idx":1,"var":0.14138549717100454,"steps":[{"z":-2.4,"d":{"GS":"M106.14,20.83C101.68,23.13,84.18,37.12,73.67,43.94C55.82,55.52,48.87,65.87,66.28,64.88C80.8,64.04,76.15,72.3,48.13,90.69C36.75,98.16,15.61,112.08,18.84,121.99","D":"M49.9,18.24C49.14,22.64,49.16,31.59,48.06,44.3","DG":"M29.13,14.64C66.72,2.04,133.06,-0.98,32.29,63.16C24.94,67.85,-7.83,99.8,29.13,88.24C34.77,86.48,49.12,81.59,54.3,81.48"}},{"z":-1.6,"d":{"GS":"M103.59,19.4C98.4,22.46,82.53,34.95,72.95,41.42C56.27,52.68,47.18,63.78,64.54,62.18C78.91,60.85,75.48,68.78,46.97,87.78C32.82,97.21,13.31,111.58,17.01,120.62","D":"M48.02,17.21C46.95,21.69,46.68,31.47,46.4,42.29","DG":"M26.28,13.55C61.1,2.11,127.18,-3.19,36.29,56.82C19.76,67.73,-5.67,96.4,27.6,86.26C33.09,84.59,46.42,80.14,52.42,79.36"}},{"z":-0.8,"d":{"GS":"M101.05,17.98C95.12,21.78,80.9,32.81,72.22,38.9C56.69,49.8,45.52,61.69,62.8,59.48C77,57.67,74.8,65.26,45.81,84.87C28.92,96.3,11.01,111.09,15.18,119.26","D":"M46.15,16.17C44.76,20.74,44.2,31.34,44.75,40.28","DG":"M23.43,12.45C55.48,2.19,121.48,-5.09,40.28,50.48C14.79,67.92,-3.49,93.05,26.07,84.28C31.4,82.7,43.72,78.68,50.55,77.25"}},{"z":0.0,"d":{"GS":"M98.5,16.55C91.85,21.11,79.28,30.7,71.49,36.38C57.1,46.89,43.87,59.59,61.06,56.78C75.08,54.5,74.12,61.72,44.66,81.96C25.05,95.43,8.71,110.6,13.34,117.89","D":"M44.28,15.14C42.57,19.79,41.72,31.22,43.1,38.27","DG":"M20.59,11.35C49.86,2.26,115.95,-6.68,44.28,44.13C10.03,68.41,-1.29,89.76,24.55,82.3C29.72,80.8,41.02,77.22,48.67,75.14"}},{"z":0.8,"d":{"GS":"M95.96,15.12C88.57,20.43,77.68,28.62,70.77,33.86C57.49,43.93,42.25,57.49,59.32,54.09C73.14,51.33,73.43,58.18,43.5,79.05C21.2,94.6,6.41,110.11,11.51,116.52","D":"M42.4,14.1C40.39,18.85,39.23,31.1,41.45,36.26","DG":"M17.74,10.25C44.24,2.34,110.6,-7.98,48.27,37.79C5.5,69.2,0.93,86.52,23.02,80.32C28.03,78.91,38.31,75.76,46.8,73.02"}},{"z":1.6,"d":{"GS":"M93.41,13.69C85.3,19.76,76.11,26.56,70.04,31.34C57.86,40.94,40.64,55.38,57.58,51.39C71.18,48.18,72.73,54.64,42.34,76.14C17.38,93.8,4.11,109.62,9.68,115.15","D":"M40.53,13.06C38.2,17.9,36.75,30.98,39.79,34.25","DG":"M14.9,9.16C38.62,2.41,105.44,-8.98,52.27,31.44C1.19,70.27,3.16,83.34,21.5,78.33C26.34,77.01,35.61,74.31,44.92,70.91"}},{"z":2.4,"d":{"GS":"M90.87,12.26C82.02,19.08,74.55,24.54,69.32,28.82C58.2,37.92,39.06,53.27,55.84,48.69C69.21,45.05,72.02,51.08,41.18,73.23C13.6,93.05,1.81,109.13,7.85,113.79","D":"M38.65,12.03C36.01,16.95,34.27,30.86,38.14,32.24","DG":"M12.05,8.06C33,2.49,100.48,-9.69,56.26,25.1C-2.87,71.63,5.41,80.21,19.97,76.35C24.65,75.11,32.91,72.85,43.05,68.8"}}]},{"idx":2,"var":0.09217878878835264,"steps":[{"z":-2.4,"d":{"GS":"M106.85,19.7C102.35,21.45,96.92,24.26,88.25,29.71C71.07,40.52,46.17,58.19,71.11,57.43C94.34,56.72,79.88,67.94,56.08,80.96C31.98,94.15,17.82,106.84,24.12,113.3","D":"M48.45,12.61C46.64,21.14,44.42,32.02,45.86,40.84","DG":"M30.58,7.73C56.27,1.11,113.14,1.66,57.53,36.81C33.79,51.82,-9.92,91.51,30.26,82.1C38.93,80.08,44.15,79.01,53.26,77.51"}},{"z":-1.6,"d":{"GS":"M104.07,18.65C98.85,21.34,91.04,26.39,82.66,31.94C66.42,42.68,45.38,58.88,67.76,57.21C87.93,55.71,78.09,66.01,52.27,81.29C29.69,94.66,14.79,108.09,20.53,114.83","D":"M47.06,13.45C45.28,20.69,43.52,31.75,44.94,39.98","DG":"M27.25,8.94C54.13,1.49,114.24,-0.92,53.11,39.25C25.77,57.22,-7.01,91.09,28.36,82.17C35.85,80.28,43.1,78.41,51.73,76.72"}},{"z":-0.8,"d":{"GS":"M101.29,17.6C95.35,21.22,85.16,28.54,77.08,34.16C61.77,44.8,44.62,59.35,64.41,57C81.51,54.97,76.17,63.94,48.46,81.63C27.38,95.09,11.75,109.35,16.94,116.36","D":"M45.67,14.29C43.93,20.24,42.62,31.49,44.02,39.12","DG":"M23.92,10.14C52,1.88,115.18,-3.7,48.7,41.69C17.85,62.75,-4.13,90.5,26.45,82.23C32.78,80.52,42.06,77.82,50.2,75.93"}},{"z":0.0,"d":{"GS":"M98.5,16.55C91.85,21.11,79.28,30.7,71.49,36.38C57.1,46.89,43.87,59.59,61.06,56.78C75.08,54.5,74.12,61.72,44.66,81.96C25.05,95.43,8.71,110.6,13.34,117.89","D":"M44.28,15.14C42.57,19.79,41.72,31.22,43.1,38.27","DG":"M20.59,11.35C49.86,2.26,115.95,-6.68,44.28,44.13C10.03,68.41,-1.29,89.76,24.55,82.3C29.72,80.8,41.02,77.22,48.67,75.14"}},{"z":0.8,"d":{"GS":"M95.72,15.5C88.35,20.99,73.4,32.86,65.91,38.6C52.42,48.93,43.12,59.61,57.71,56.57C68.66,54.28,71.92,59.37,40.85,82.29C22.69,95.68,5.67,111.85,9.75,119.42","D":"M42.88,15.98C41.22,19.35,40.81,30.96,42.18,37.41","DG":"M17.26,12.56C47.73,2.65,116.54,-9.86,39.86,46.57C2.32,74.2,1.52,88.85,22.64,82.36C26.66,81.13,39.97,76.62,47.15,74.35"}},{"z":1.6,"d":{"GS":"M92.93,14.45C84.85,20.88,67.53,35.04,60.32,40.83C47.72,50.95,42.35,59.41,54.36,56.35C62.28,54.34,69.58,56.89,37.04,82.62C20.31,95.86,2.63,113.11,6.16,120.95","D":"M41.49,16.82C39.86,18.9,39.91,30.69,41.26,36.55","DG":"M13.93,13.77C45.59,3.03,116.96,-13.23,35.44,49.01C-5.29,80.11,4.28,87.79,20.74,82.43C23.62,81.49,38.93,76.03,45.62,73.56"}},{"z":2.4,"d":{"GS":"M90.15,13.4C81.35,20.76,61.65,37.23,54.74,43.05C43.01,52.92,41.55,58.99,51,56.14C55.95,54.65,67.07,54.28,33.23,82.96C17.89,95.96,-0.41,114.36,2.57,122.48","D":"M40.1,17.66C38.5,18.45,39.01,30.43,40.33,35.7","DG":"M10.6,14.98C43.46,3.41,117.2,-16.79,31.02,51.46C-12.78,86.14,7,86.57,18.83,82.49C20.59,81.88,37.88,75.43,44.09,72.77"}}]},{"idx":3,"var":0.08430561869442137,"steps":[{"z":-2.4,"d":{"GS":"M102.36,21.28C95.52,27.81,82.8,37.62,73.08,44.62C57.55,55.82,50.35,63.47,63.99,60.91C69.59,59.86,83.79,60.96,39.14,91.92C34.37,95.23,6.06,113.71,9.72,124","D":"M56.98,15.63C53.56,14.25,55.6,28.96,56.81,36.18","DG":"M32.19,14.98C62.99,0.72,124.43,-3.71,57.66,41.93C15.64,70.66,16.31,87.69,38.4,80.17C44.63,78.05,46.95,78.51,53.28,76.95"}},{"z":-1.6,"d":{"GS":"M101.08,19.7C94.29,25.57,81.62,35.31,72.55,41.87C57.4,52.84,48.2,62.19,63.01,59.53C71.41,58.03,80.58,61.23,40.98,88.6C31.27,95.31,6.94,113.16,10.93,122.44","D":"M52.75,15.47C49.9,16.1,50.97,29.71,52.24,36.87","DG":"M28.32,13.77C58.61,1.23,121.62,-4.68,53.2,42.66C13.78,69.94,10.45,88.42,33.78,80.88C39.66,78.98,44.97,78.08,51.75,76.35"}},{"z":-0.8,"d":{"GS":"M99.79,18.12C93.07,23.34,80.45,33,72.02,39.13C57.25,49.86,46.03,60.9,62.04,58.16C73.24,56.24,77.35,61.48,42.82,85.28C28.16,95.38,7.83,111.88,12.14,120.17","D":"M48.51,15.3C46.24,17.95,46.35,30.47,47.67,37.57","DG":"M24.46,12.56C54.24,1.75,118.79,-5.67,48.74,43.4C11.92,69.19,4.58,89.11,29.17,81.59C34.69,79.9,42.99,77.65,50.21,75.74"}},{"z":0.0,"d":{"GS":"M98.5,16.55C91.85,21.11,79.28,30.7,71.49,36.38C57.1,46.89,43.87,59.59,61.06,56.78C75.08,54.5,74.12,61.72,44.66,81.96C25.05,95.43,8.71,110.6,13.34,117.89","D":"M44.28,15.14C42.57,19.79,41.72,31.22,43.1,38.27","DG":"M20.59,11.35C49.86,2.26,115.95,-6.68,44.28,44.13C10.03,68.41,-1.29,89.76,24.55,82.3C29.72,80.8,41.02,77.22,48.67,75.14"}},{"z":0.8,"d":{"GS":"M97.21,14.97C90.63,18.87,78.11,28.4,70.97,33.63C56.95,43.91,41.71,58.26,60.08,55.41C76.92,52.8,70.87,61.95,46.5,78.64C21.92,95.47,9.59,109.32,14.55,115.61","D":"M40.04,14.97C38.91,21.64,37.09,31.98,38.53,38.96","DG":"M16.72,10.14C45.49,2.78,113.09,-7.71,39.82,44.87C8.12,67.61,-7.16,90.37,19.93,83.01C24.74,81.7,39.04,76.79,47.14,74.53"}},{"z":1.6,"d":{"GS":"M95.93,13.39C89.4,16.64,76.95,26.1,70.44,30.89C56.8,40.93,39.54,56.91,59.1,54.03C78.77,51.14,67.62,62.16,48.34,75.32C18.79,95.49,10.48,108.05,15.76,113.33","D":"M35.8,14.8C35.25,23.49,32.46,32.73,33.96,39.66","DG":"M12.85,8.93C41.11,3.29,110.21,-8.76,35.35,45.6C6.2,66.78,-13.04,90.95,15.31,83.72C19.75,82.58,37.06,76.36,45.6,73.93"}},{"z":2.4,"d":{"GS":"M94.64,11.82C88.18,14.41,75.78,23.8,69.91,28.14C56.65,37.95,37.37,55.55,58.13,52.66C80.62,49.53,64.35,62.35,50.18,72C15.64,95.5,11.36,106.77,16.97,111.06","D":"M31.57,14.64C31.58,25.34,27.83,33.49,29.39,40.36","DG":"M8.98,7.72C36.73,3.8,107.31,-9.83,30.89,46.33C4.26,65.91,-18.92,91.49,10.7,84.42C14.76,83.46,35.08,75.93,44.07,73.32"}}]}],"morph":{"grid":[[{"GS":"M92.83,14.09C82.7,20.71,76.84,25.69,71.67,29.81C59.65,39.38,39.17,55.07,58.92,51.23C75.38,48.04,72.63,56.17,42.79,78.21C15.81,98.13,7.7,109.88,13.21,112.8","D":"M36.84,12.27C33.24,14.51,32.64,31.5,35.42,35.96","DG":"M2.95,7.81C102.53,-12.61,74.55,12.59,45.35,35.43C-11.58,79.97,8.23,82.34,19.28,79.48C24.87,78.04,32.85,76.5,43.05,72.91"},{"GS":"M92.49,13.53C83.18,20.06,76.08,25.62,70.67,29.95C58.84,39.41,39.51,54.74,57.81,50.64C72.79,47.28,72.5,54.51,42.28,76.45C15.64,95.77,5.33,109.62,10.99,113.64","D":"M38.22,12.41C35.17,15.97,34.07,31.21,37.19,34.6","DG":"M8.21,8.21C69.17,-5.08,88.72,1.58,49.81,31.85C-6.23,75.44,6.25,82.04,20.01,78.41C25.19,77.05,33.55,75.04,43.52,71.38"},{"GS":"M92.14,12.98C83.66,19.42,75.32,25.55,69.68,30.08C58.03,39.43,39.85,54.33,56.71,50.04C70.2,46.61,72.37,52.86,41.76,74.69C15.49,93.42,2.96,109.37,8.76,114.47","D":"M39.59,12.55C37.1,17.43,35.51,30.92,38.97,33.24","DG":"M13.48,8.61C35.81,2.45,102.94,-9.37,54.26,28.27C-0.87,70.91,4.28,81.77,20.73,77.34C25.5,76.06,34.26,73.58,43.99,69.85"},{"GS":"M91.79,12.42C84.14,18.77,74.56,25.48,68.69,30.22C57.23,39.46,40.18,53.84,55.61,49.44C67.62,46.03,72.25,51.21,41.25,72.93C15.34,91.08,0.59,109.12,6.54,115.3","D":"M40.96,12.68C39.03,18.89,36.95,30.63,40.74,31.88","DG":"M18.74,9.01C2.45,9.98,117.19,-20.27,58.72,24.69C4.49,66.39,2.32,81.52,21.46,76.27C25.81,75.08,34.96,72.11,44.45,68.33"},{"GS":"M91.44,11.86C84.62,18.13,73.8,25.4,67.69,30.35C56.42,39.49,40.51,53.27,54.51,48.85C65.05,45.52,72.12,49.57,40.74,71.17C15.2,88.74,-1.79,108.87,4.31,116.14","D":"M42.34,12.82C40.96,20.34,38.38,30.34,42.52,30.53","DG":"M24,9.41C-30.91,17.5,131.49,-31.12,63.18,21.11C9.85,61.88,0.37,81.31,22.19,75.2C26.12,74.1,35.67,70.65,44.92,66.8"}],[{"GS":"M96.02,15.88C86.8,21.55,78.8,28.24,72.57,32.96C59.19,43.12,41.18,57.58,61.09,54.61C77.82,52.11,73.52,60.61,44.24,81.84C20.51,99.04,10.58,110.49,15.5,114.51","D":"M39.18,13.56C35.98,15.69,35.74,31.65,37.48,38.47","DG":"M6.51,9.18C109.56,-12.7,80.55,13.24,40.35,43.36C-6.39,78.4,5.4,86.19,21.19,81.96C26.99,80.41,36.23,78.33,45.4,75.55"},{"GS":"M95.67,15.32C87.27,20.91,78.04,28.17,71.58,33.1C58.39,43.16,41.51,57.31,59.99,54.01C75.24,51.28,73.39,58.95,43.72,80.08C20.38,96.71,8.21,110.24,13.28,115.35","D":"M40.56,13.7C37.91,17.15,37.18,31.36,39.26,37.11","DG":"M11.77,9.58C76.2,-5.17,94.9,2.46,44.81,39.78C-1,73.92,3.44,85.94,21.92,80.89C27.3,79.42,36.93,76.86,45.86,74.02"},{"GS":"M95.32,14.76C87.75,20.26,77.29,28.1,70.59,33.23C57.59,43.19,41.84,56.96,58.89,53.41C72.65,50.55,73.25,57.3,43.21,78.32C20.24,94.39,5.83,109.99,11.05,116.18","D":"M41.93,13.84C39.84,18.61,38.61,31.07,41.03,35.75","DG":"M17.03,9.98C42.84,2.35,109.29,-8.26,49.27,36.2C4.4,69.44,1.48,85.72,22.64,79.82C27.61,78.43,37.64,75.4,46.33,72.5"},{"GS":"M94.97,14.2C88.23,19.62,76.53,28.03,69.59,33.37C56.78,43.22,42.17,56.54,57.78,52.82C70.07,49.89,73.12,55.65,42.7,76.56C20.12,92.08,3.46,109.73,8.83,117.01","D":"M43.31,13.98C41.77,20.07,40.05,30.78,42.81,34.4","DG":"M22.29,10.38C9.48,9.88,123.72,-18.92,53.73,32.62C9.8,64.97,-0.46,85.53,23.37,78.75C27.92,77.45,38.34,73.94,46.8,70.97"},{"GS":"M94.62,13.64C88.71,18.98,75.77,27.96,68.6,33.5C55.98,43.26,42.49,56.03,56.68,52.22C67.49,49.31,72.99,54,42.18,74.8C20.01,89.78,1.09,109.48,6.6,117.85","D":"M44.68,14.12C43.7,21.53,41.48,30.49,44.58,33.04","DG":"M27.56,10.78C-23.88,17.41,138.19,-29.53,58.19,29.04C15.21,60.5,-2.4,85.36,24.09,77.68C28.23,76.48,39.05,72.47,47.26,69.44"}],[{"GS":"M99.2,17.66C90.89,22.39,80.79,30.83,73.48,36.11C58.7,46.8,43.24,60.08,63.26,57.98C80.23,56.19,74.4,65.04,45.68,85.48C25.27,100.01,13.45,111.1,17.79,116.22","D":"M41.53,14.86C38.71,16.88,38.84,31.8,39.55,40.98","DG":"M10.06,10.55C116.58,-12.79,86.87,14.34,35.36,51.29C-0.84,77.27,2.6,90.13,23.1,84.44C29.09,82.77,39.61,80.15,47.74,78.19"},{"GS":"M98.85,17.11C91.37,21.75,80.03,30.76,72.49,36.25C57.9,46.85,43.55,59.88,62.16,57.38C77.66,55.3,74.26,63.38,45.17,83.72C25.15,97.71,11.08,110.85,15.57,117.05","D":"M42.9,15C40.64,18.34,40.28,31.51,41.32,39.62","DG":"M15.33,10.95C83.22,-5.27,101.39,3.8,39.82,47.71C4.59,72.84,0.65,89.93,23.82,83.37C29.41,81.79,40.31,78.68,48.21,76.67"},{"GS":"M98.5,16.55C91.85,21.11,79.28,30.7,71.49,36.38C57.1,46.89,43.87,59.59,61.06,56.78C75.08,54.5,74.12,61.72,44.66,81.96C25.05,95.43,8.71,110.6,13.34,117.89","D":"M44.28,15.14C42.57,19.79,41.72,31.22,43.1,38.27","DG":"M20.59,11.35C49.86,2.26,115.95,-6.68,44.28,44.13C10.03,68.41,-1.29,89.76,24.55,82.3C29.72,80.8,41.02,77.22,48.67,75.14"},{"GS":"M98.15,15.99C92.33,20.46,78.53,30.63,70.5,36.52C56.3,46.93,44.19,59.23,59.96,56.19C72.5,53.77,73.98,60.07,44.14,80.2C24.95,93.15,6.34,110.35,11.12,118.72","D":"M45.65,15.27C44.5,21.25,43.15,30.93,44.87,36.91","DG":"M25.85,11.75C16.5,9.79,130.54,-17.11,48.74,40.55C15.47,63.99,-3.22,89.61,25.27,81.23C30.03,79.83,41.72,75.76,49.14,73.61"},{"GS":"M97.81,15.43C92.81,19.82,77.77,30.56,69.51,36.65C55.51,46.97,44.51,58.78,58.86,55.59C69.93,53.13,73.84,58.42,43.63,78.44C24.86,90.88,3.96,110.1,8.9,119.56","D":"M47.02,15.41C46.43,22.71,44.59,30.65,46.65,35.55","DG":"M31.11,12.15C-16.86,17.32,145.18,-27.48,53.19,36.97C20.92,59.58,-5.14,89.49,26,80.16C30.35,78.85,42.42,74.29,49.61,72.08"}],[{"GS":"M102.38,19.45C94.98,23.24,82.8,33.46,74.39,39.26C58.18,50.43,45.33,62.58,65.44,61.35C82.61,60.3,75.26,69.46,47.13,89.12C30.06,101.04,16.33,111.72,20.09,117.93","D":"M43.87,16.15C41.45,18.06,41.95,31.95,41.62,43.5","DG":"M13.62,11.92C123.61,-12.89,93.49,15.9,30.37,59.22C5.06,76.6,-0.17,94.16,25,86.92C31.2,85.13,42.98,81.97,50.09,80.83"},{"GS":"M102.03,18.89C95.46,22.59,82.05,33.4,73.4,39.39C57.38,50.48,45.63,62.43,64.33,60.75C80.05,59.34,75.12,67.8,46.62,87.36C29.97,98.78,13.96,111.47,17.86,118.76","D":"M45.24,16.29C43.38,19.52,43.38,31.66,43.39,42.14","DG":"M18.88,12.32C90.25,-5.36,108.17,5.6,34.83,55.64C10.53,72.22,-2.11,94.01,25.73,85.85C31.51,84.15,43.69,80.51,50.55,79.31"},{"GS":"M101.68,18.33C95.94,21.95,81.3,33.34,72.4,39.53C56.59,50.53,45.93,62.21,63.23,60.16C77.48,58.46,74.97,66.14,46.1,85.6C29.89,96.52,11.58,111.22,15.64,119.6","D":"M46.62,16.43C45.31,20.98,44.82,31.38,45.16,40.78","DG":"M24.15,12.72C56.89,2.17,122.89,-4.64,39.28,52.06C16.01,67.85,-4.03,93.88,26.46,84.78C31.83,83.17,44.39,79.04,51.02,77.78"},{"GS":"M101.34,17.77C96.42,21.31,80.55,33.28,71.41,39.67C55.79,50.57,46.24,61.91,62.13,59.56C74.91,57.67,74.83,64.48,45.59,83.84C29.82,94.28,9.21,110.96,13.41,120.43","D":"M47.99,16.57C47.24,22.44,46.25,31.09,46.94,39.42","DG":"M29.41,13.12C23.53,9.7,137.64,-14.82,43.74,48.48C21.49,63.48,-5.95,93.79,27.18,83.7C32.14,82.2,45.1,77.58,51.48,76.25"},{"GS":"M100.99,17.22C96.9,20.66,79.8,33.21,70.41,39.8C55,50.62,46.55,61.53,61.03,58.96C72.34,56.96,74.69,62.83,45.08,82.08C29.75,92.04,6.84,110.71,11.19,121.26","D":"M49.37,16.71C49.17,23.9,47.69,30.8,48.71,38.06","DG":"M34.67,13.52C-9.83,17.22,152.44,-24.95,48.2,44.9C26.98,59.12,-7.86,93.71,27.91,82.63C32.45,81.23,45.8,76.12,51.95,74.72"}],[{"GS":"M105.56,21.24C99.08,24.08,84.84,36.15,75.3,42.41C57.63,53.99,47.46,65.07,67.61,64.72C84.96,64.41,76.12,73.87,48.58,92.75C34.9,102.13,19.2,112.33,22.38,119.64","D":"M46.21,17.45C44.18,19.24,45.05,32.1,43.68,46.01","DG":"M17.18,13.3C130.63,-12.98,100.39,17.93,25.37,67.15C11.29,76.39,-2.92,98.27,26.91,89.39C33.31,87.49,46.36,83.79,52.43,83.48"},{"GS":"M105.21,20.68C99.56,23.44,84.1,36.09,74.3,42.54C56.84,54.05,47.74,64.99,66.51,64.12C82.41,63.39,75.97,72.2,48.06,90.99C34.84,99.9,16.83,112.08,20.15,120.47","D":"M47.59,17.59C46.11,20.7,46.48,31.82,45.46,44.65","DG":"M22.44,13.7C97.27,-5.45,115.22,7.87,29.83,63.57C16.81,72.07,-4.84,98.17,27.64,88.32C33.62,86.51,47.07,82.33,52.9,81.95"},{"GS":"M104.87,20.12C100.04,22.79,83.35,36.03,73.31,42.68C56.05,54.1,48.02,64.83,65.41,63.53C79.86,62.45,75.82,70.54,47.55,89.23C34.78,97.68,14.46,111.83,17.93,121.31","D":"M48.96,17.73C48.04,22.16,47.92,31.53,47.23,43.29","DG":"M27.7,14.1C63.91,2.07,130.1,-2.12,34.29,59.99C22.32,67.75,-6.75,98.09,28.36,87.25C33.93,85.53,47.77,80.87,53.36,80.42"},{"GS":"M104.52,19.56C100.52,22.15,82.6,35.97,72.31,42.82C55.26,54.16,48.32,64.59,64.3,62.93C77.29,61.58,75.67,68.88,47.04,87.47C34.73,95.46,12.09,111.58,15.7,122.14","D":"M50.34,17.86C49.97,23.62,49.36,31.24,49,41.93","DG":"M32.96,14.49C30.55,9.6,145.01,-12.05,38.75,56.41C27.84,63.44,-8.65,98.04,29.09,86.18C34.25,84.56,48.48,79.4,53.83,78.89"},{"GS":"M104.17,19C101,21.51,81.86,35.91,71.32,42.95C54.46,54.21,48.62,64.27,63.2,62.33C74.73,60.81,75.52,67.23,46.53,85.71C34.69,93.26,9.71,111.33,13.48,122.97","D":"M51.71,18C51.9,25.08,50.79,30.95,50.78,40.57","DG":"M38.23,14.89C-2.81,17.13,159.96,-21.93,43.21,52.83C33.36,59.13,-10.54,98.02,29.81,85.11C34.56,83.59,49.18,77.94,54.29,77.37"}]],"zmax":2.0},"samples":{"1":{"GS":"M104.18,15.67C77.9,33.6,77.65,34.76,69.92,40C58.43,47.79,46.75,58.27,71.48,55.38C106.43,51.29,62.85,74.97,53.6,82.32C43.64,90.23,20.92,106.51,25.34,123.13","D":"M30.59,17.82C31.04,28.33,31.5,40.79,31.95,51.3","DG":"M6.45,8.67C89.97,-13.52,77.88,24.54,26.7,55.98C9.05,66.82,-8.06,89.75,18.33,86.09C23.29,85.4,44.81,82.65,54.93,80.51"},"2":{"GS":"M107.12,18.09C100.76,22.28,92.22,28.3,84.61,33.83C68.05,45.86,43.84,68.37,68.62,65.97C89.38,63.96,62.77,80.39,53.53,87.73C43.57,95.64,23.09,113.17,22.09,120.54","D":"M47.86,16.92C49.53,26.96,45.73,32.86,46.19,43.37","DG":"M37.08,14.28C-13.14,16.64,154.15,-22.42,43.25,52.95C26.11,64.6,-18.77,104.3,20.51,91.41C21.16,91.2,44.93,83.92,58.24,80.73"},"3":{"GS":"M100.8,30.55C110.05,22.06,100.61,25.02,93.2,30.8C78.25,42.46,33.25,70.98,71.4,66.29C92.1,63.75,90.41,68.57,58.47,90.75C48.02,98,23.87,112.04,29.07,121.17","D":"M44.4,14.08C44.02,22.7,40.85,38.16,45.92,41.96","DG":"M14.49,11.23C53.77,4.13,115.25,0.77,54.67,43.23C37.7,55.12,-17.32,108.88,24.25,99.12C39.45,95.55,39.97,92.02,52.77,90.5"},"4":{"GS":"M103.54,16.83C114.77,3.11,76.3,36.49,68.94,41.92C50.15,55.77,41.77,69.08,59.55,66.27C70.4,64.56,71.87,66.89,43.95,86.7C33.58,94.06,6.67,111.81,18.84,119.92","D":"M40.84,23.53C36.32,27.9,35.23,35.38,38.81,43.49","DG":"M2.25,20.53C48.48,2.32,125.84,-7.19,44.58,48.18C15.84,67.76,-9.7,96.22,26.63,85.81C41.42,81.57,38.62,81.58,50.03,77.94"},"5":{"GS":"M100.39,8.91C93.15,16.71,75.56,29.36,60.09,41.69C42.64,55.59,46.65,57.56,60.8,51.62C72.29,46.8,71.73,51.62,40.23,76.59C30.26,84.49,8.02,108.37,10.29,122.14","D":"M51.87,16.43C49.74,20.4,49.74,30.33,51.87,39.13","DG":"M35.41,12.89C-2.47,16.15,149.49,-24.14,49.03,39C20.34,57.03,10.44,81.57,31.72,75.32C46.06,71.11,41.51,72.91,53.57,69.79"},"6":{"GS":"M98.3,13.59C91.06,21.39,82.33,27.48,65.95,39.69C48.06,53.03,32.72,68.8,56.09,62.05C68.59,58.44,73.86,63.3,39.57,88.15C29.26,95.62,-0.15,114.54,12.9,121.9","D":"M45.81,5.54C45.12,9.57,45.81,23.04,46.37,32.34","DG":"M19.42,12.99C42.41,1.84,116.32,-6.71,62.89,29.7C18.87,59.69,-6.4,91.21,31.53,77.19C45.27,72.11,47.1,71.34,59.12,67.7"},"7":{"GS":"M97.77,22.56C89.14,28.89,97.8,23.05,81.38,35.22C69.73,43.85,47.47,59.72,71.6,56.65C95.73,53.58,82.24,68.59,45.43,92.03C27.54,103.42,4.44,132.59,33.21,115.33","D":"M50.02,10.2C45.27,14.08,46.28,27.46,45.85,38.96","DG":"M22.03,13.65C107.83,-9.64,96.47,6.32,40.89,49.14C4.11,77.48,17.67,86.85,34.68,80.86C47.77,76.25,59.3,73.91,71.5,71.54"},"8":{"GS":"M97.22,11.52C89.65,18.21,85.08,23.16,77.95,28.54C66.38,37.27,54.13,51.73,68.17,48.5C73.22,47.34,78.03,50.97,45.46,76.5C28.77,89.58,3.38,118.93,18.34,119.99","D":"M56.19,16.09C45.8,7.64,54.43,19.26,51.26,35.28","DG":"M26.96,13.28C57.43,-0.99,114.72,-4.6,59.54,36.34C21.33,64.69,15.87,83.88,34.36,77.72C47.52,73.33,43.87,74.2,56.02,70.15"},"9":{"GS":"M93.53,29.46C85.1,35.35,78.95,41.01,71.57,47.03C58.96,57.31,41.34,71.75,57.26,69.97C65.48,69.05,71.6,74.66,39.37,100.39C24.5,112.26,23.96,117.78,22.62,121.05","D":"M51.4,16.77C39.85,2.62,52.54,20.02,45.38,38.08","DG":"M25.7,8.47C94.51,-2.91,111.43,0.99,47.01,50.93C19.44,72.3,14.01,88.95,31.56,81.84C37.58,79.4,41.16,78.91,50.43,76.8"},"10":{"GS":"M99.25,30.11C91.61,34.58,77.93,42.88,70.06,48.24C56.65,57.37,30.75,70,55.66,72.58C61.06,73.14,75.97,71.65,42.62,95.31C27.1,106.32,19.52,112.26,13.56,119.53","D":"M48.76,15.21C51,19.49,47.08,37.19,52.11,39.61","DG":"M26.78,14.28C101.85,-11.24,99.99,12.04,30.51,61.6C2.42,81.63,8.16,94.01,25.29,88.52C31.36,86.57,41.5,83.86,51.18,82.75"},"11":{"GS":"M99.99,18.74C92.35,23.21,72.96,38.64,65.66,44.76C53.63,54.85,50.26,61.4,64.24,58.56C69.12,57.57,84.31,58.44,50.97,82.1C35.45,93.11,19.64,104.05,9.2,120.5","D":"M55.22,16.61C55.04,24.04,55.4,39.44,54.51,45.81","DG":"M16.28,14.66C61.43,3.04,121.88,-4.91,51.74,41.98C22.56,61.49,4.11,93.29,29.85,80.93C32.13,79.84,39.69,77.53,47.09,75.89"},"12":{"GS":"M103.71,16.6C96.8,21.5,69.98,39.53,61.79,44.4C44.36,54.77,46.52,57.94,63.81,57.51C68.79,57.39,97.09,57.07,52.14,82.14C35.52,91.41,1.72,116.72,15.26,120.47","D":"M48.1,9.69C48.68,16.75,49.54,34.47,48.39,42.1","DG":"M31.25,12.5C85.56,-7.16,107.83,5.57,36.29,51.25C8.2,69.18,-9.81,100.37,27.21,86.4C29.57,85.51,44.15,81.26,51.56,79.63"},"13":{"GS":"M106.77,13.98C100,19.39,90.77,24.78,82.77,29.95C65.45,41.14,44.97,55.12,63.28,53.86C68.69,53.49,82.24,55.5,37.29,80.57C20.67,89.84,-4.94,113.95,7.61,119.91","D":"M43.52,16.24C39.28,23.1,38.83,33.92,44.96,36.18","DG":"M39.89,13.17C-20.77,10,136.24,-11.63,61.27,31.72C32.42,48.4,4.08,78.66,32.83,72.86C35.31,72.36,45.28,69.23,47.55,68.42"},"14":{"GS":"M105.44,14.39C100.72,17.72,92.24,22.98,86.01,26.84C68.49,37.72,52.63,50.76,68.08,50.46C73.56,50.35,83.32,52.5,48.86,73.76C32.66,83.75,11.93,100.81,6.13,119.92","D":"M50.79,13.86C50.68,18.8,50.15,30.82,49.61,32.75","DG":"M31.18,8.91C36.83,8.27,133.99,-16.74,51.43,39.46C23.64,58.38,-5.15,92.6,26.63,84.66C29.08,84.05,34.9,82.83,37.58,82.19"},"15":{"GS":"M106.43,20.42C99.01,26.11,91.13,30.03,84.51,33.19C65.7,42.16,40.16,63.56,61.56,63.56C79.16,63.56,79.57,73.07,39.13,90.65C27.22,95.83,15.14,101.52,4.96,117.23","D":"M49.82,18.53C49.47,23.02,47.92,36.99,47.06,41.31","DG":"M28.08,14.9C36.88,13.17,127.48,-1.32,48.44,41.13C18.82,57.04,-12.33,91.53,19.45,83.58C21.9,82.97,46.97,76.63,49.65,75.99"},"16":{"GS":"M101.77,12.31C94.35,18,74.92,34.08,68.64,37.85C53.11,47.17,54.05,56.88,63.29,56.49C71.4,56.14,75.2,67.53,37.92,86.34C26.33,92.19,2.03,112.92,13.24,119.99","D":"M50,10.07C49.14,15.76,47.58,27.15,48.79,36.47","DG":"M35.67,10.24C44.47,8.51,125.4,-13.92,36.71,51.31C9.62,71.23,-2.46,88.41,27.39,76.33C29.73,75.38,52.32,66.1,55,65.46"},"17":{"GS":"M107.71,12.42C100.29,18.11,71.61,41.28,62.37,47.56C47.69,57.55,50.99,60.73,60.05,58.87C73.42,56.13,70.27,67.84,30.38,92.31C23.96,96.25,-0.18,109.35,4.58,117.92","D":"M42.35,25.35C41.39,30.78,40.3,34.62,41.58,44.02","DG":"M18.42,19.39C49.27,7.69,126.44,-3.93,34.81,58.22C6.1,77.69,-2.69,93.12,29.29,85.31C31.74,84.71,39.99,83.16,43.27,82.89"},"18":{"GS":"M101.97,13.1C94.55,18.79,73.04,36.47,64.19,43.28C49.53,54.56,53.68,57.07,62.84,55.79C73.94,54.24,85.45,54.29,55.11,74.44C24.71,94.63,1.51,109.79,9.35,122.28","D":"M53.94,13.02C52.84,15.17,49.7,20.57,53.42,29.99","DG":"M36.72,6.86C53.63,3.47,125.47,-8.82,38.41,48.83C9.49,67.98,7.58,82.98,45.09,70.72C47.49,69.94,55.97,67.77,58.88,66.89"},"19":{"GS":"M94.06,28.84C86.47,34.43,79.66,38.49,70.41,44.75C55.12,55.09,50.8,63.38,62.25,61.49C85.28,57.69,71.82,74.67,40.12,95.38C28.15,103.2,14.35,110.42,17.99,122.49","D":"M54.11,14.08C53.31,17.34,51.09,31.66,54.11,41.52","DG":"M30.49,14.48C62.91,0.15,127.4,-4.5,46.78,50.65C23.63,66.49,4.15,92.37,34.56,85.35C37.02,84.78,51.44,83.01,55.25,83.23"},"20":{"GS":"M98.95,16.54C93.11,23.04,88.14,28.26,78.93,34.8C60.74,47.71,50.97,58.92,65.71,53.56C80.45,48.2,82.34,57.54,51.48,80.38C37.41,90.8,4.73,110.54,9.05,121.68","D":"M51.62,14.02C52.38,20.69,52,26.86,50.99,34.16","DG":"M36,12.89C69.24,-0.96,114.57,-4.48,46.96,48.27C15.06,73.16,22.7,85.04,39.87,78.33C42.22,77.41,47.86,75.75,49.75,75.32"},"21":{"GS":"M105.82,25.22C96.36,29.8,79.75,42.06,70.87,49.03C53.17,62.92,58.79,64.48,67.21,63.22C77.44,61.69,84.76,63.53,53.17,85.66C38.83,95.7,10.89,113.9,21.42,119.39","D":"M47.37,20.79C45.84,25.37,45.54,34.07,46,42.16","DG":"M19.69,12.75C80.94,-2.87,126.58,5.99,50.45,52.52C7.94,78.51,-13.4,104.6,21.46,94.65C23.89,93.96,40.35,88.81,42.62,88.18"},"22":{"GS":"M104.39,8.28C94.58,19.05,60.96,46.24,51.86,52.91C35.48,64.92,39.61,64.62,47.97,63.02C55.48,61.58,67.63,58.39,41.29,82.43C28.15,94.43,13.96,107.48,8.05,120.62","D":"M44.14,20.91C42.78,25.96,41.48,33.9,41.77,41.51","DG":"M16.57,12.96C70.57,-1.7,118.51,-4.43,46.77,44.79C5.69,72.98,0.02,85.44,28.01,79.72C30.49,79.21,44.85,75.71,47.11,75.09"},"23":{"GS":"M98.28,1.32C88.09,12.13,68.42,32.25,60.22,40.01C47.09,52.43,49.11,54.67,57.46,53.04C74.25,49.75,57.81,68.07,23.23,93.62C8.46,104.53,-0.1,109.16,1.75,115.18","D":"M39.3,15.35C34.18,-0.83,34.1,28.34,36.63,37.39","DG":"M10.38,11.44C67.72,-5.69,101.96,-5.16,35.53,49.38C-6.16,83.61,-4.21,95.29,15.17,85.97C17.5,84.85,26.88,80.44,29.6,79.04"},"24":{"GS":"M81.35,14.43C78.49,16.54,73.4,21.69,69.77,24.81C55.94,36.69,33.36,62.47,53.98,54.73C61.2,52.02,71.57,49.02,43.15,78.19C29.41,92.29,7.66,113.23,9.77,118.34","D":"M25.79,20.3C20.55,25.42,20.91,34.32,23.29,43.83","DG":"M1.21,16.7C60.18,-7.56,88.56,-7.04,30.94,49.88C-3.69,84.09,-5.66,96.8,14.06,88.31C16.55,87.24,24.24,83.75,36.79,79.61"},"25":{"GS":"M85.75,17.87C82.9,20.48,63.11,35.36,60.43,38.68C56.54,43.51,44.42,55.48,55.68,50.05C62.47,46.78,77.09,46.48,43.8,71.16C26.96,83.65,-9.64,110.17,4.8,119.61","D":"M37.96,12.15C36.09,18.3,33.85,26.54,38.01,29.73","DG":"M24.91,8.77C-17.02,14.06,119.54,-23.18,49.39,32.87C12.04,62.71,2.27,81.93,19.72,78.49C22.85,77.87,34.29,73.42,46.79,68.29"},"26":{"GS":"M87.69,18.09C84.23,21.3,72.81,29.89,68.96,32.97C64.12,36.84,42.79,49.26,62.03,46.7C70.73,45.54,83.33,46.7,40.99,81.6C24.09,95.53,12.89,105.72,6.86,119.45","D":"M36.43,14.84C35.97,21.52,36.18,28.46,36.73,32.87","DG":"M16.68,7.9C44.37,-0.97,112.18,-8.26,34.46,41.27C-11.78,70.74,-1.14,81.08,16.88,77.68C20.01,77.09,37.55,73.33,50.05,68.2"},"27":{"GS":"M79.51,13.64C67.24,20.67,57.64,29.75,54.24,33.31C48.6,39.21,27.58,59.48,46.3,53.69C52.88,51.65,67.72,49.09,36.05,75.17C19.14,89.09,0.74,114.23,9.83,118.17","D":"M31.26,12.24C29.78,19.92,24.32,42.42,33.89,28.14","DG":"M1.55,12.13C23.47,7.57,87.43,-12.55,52.09,18.43C-15.8,77.94,-1.04,85.55,15.07,79.69C17.4,78.84,24.48,77.06,37.31,70"},"28":{"GS":"M90.63,15.98C82.32,19.46,81.33,19.97,77.04,22.38C59.57,32.22,41.94,54.71,59.51,47.1C77.08,39.49,77.71,47.32,50.3,68.45C33.03,81.76,3.79,105.86,4.24,118.89","D":"M39.38,15.41C37.91,20.32,36.6,24.63,38.68,34.68","DG":"M10.61,9.08C57.04,-1.66,105.84,-9.13,32.46,45.86C-24.04,88.2,13.56,80.88,16.13,80.31C20.99,79.22,34.62,75.95,44.65,73.22"},"29":{"GS":"M102.7,20.08C94.39,23.56,91.77,25.66,87.48,28.07C70.01,37.91,55.5,52.83,69.34,50.05C83.18,47.27,76.37,56.73,46.13,74.34C25.77,86.2,8.15,100.95,1.38,116.94","D":"M53.51,22.28C53.34,26.06,53.44,28.8,53.76,36.19","DG":"M26.2,7.75C49.41,9.15,134.32,-20.78,57.09,39.16C6.98,78.05,29.27,78.6,33.71,77.55C36.88,76.8,41.85,75.48,46.28,74.23"},"30":{"GS":"M87.72,14.21C81.03,19.73,70.18,28.6,60.56,36C48.67,45.14,39.68,55.56,51.35,52.2C56.27,50.78,64.07,50.14,40.97,68.11C11.35,91.16,-6.62,112.33,5.15,117.42","D":"M34.88,14.33C35.13,22.38,34.9,28.38,33.9,34.88","DG":"M6.92,14.96C28.1,12.04,138.57,-32.12,19.47,57.33C11.44,63.36,-13.33,90.03,14.26,81.77C21.13,79.71,49.02,64.35,54.38,62.43"},"31":{"GS":"M85.16,21.74C76.82,28.81,56.92,43.02,46.96,49.99C34.67,58.6,30.64,65.93,42.58,63.72C61.73,60.18,62.9,69.3,43.25,83.58C7.28,109.71,13.83,122.99,24.47,115.06","D":"M43.82,15.74C44.07,23.79,45.14,35.06,44.13,41.56","DG":"M14.44,11.68C-42.51,20.37,134.07,-32.14,48.51,41.01C6.97,76.52,-11.39,99.69,11.36,90.39C14.45,89.13,33.44,82.85,39.88,81.18"},"32":{"GS":"M95.72,8.16C88.3,10.57,76.44,17.06,66.99,25.49C55.7,35.55,35.1,55.36,59.11,52.45C80.45,49.87,67.42,63.53,47.31,77.16C10.66,101.99,0.84,115.15,8.7,119.35","D":"M35.06,14.01C36.1,22.36,35.48,28.2,33.81,35.71","DG":"M10.27,7.98C26.5,6.08,116.86,-18.14,36.6,41.26C-6.09,72.85,-5.34,89.78,14.97,83.38C18.15,82.38,50.47,69.62,56.9,67.96"},"33":{"GS":"M99.89,18.58C92.68,23.27,84.8,28.47,73.57,36.85C61.45,45.89,50.26,52.9,62.34,49.42C82.86,43.51,68.21,59.18,44.33,73.79C4.86,97.94,2.17,110.43,1.49,118.48","D":"M48.93,13.38C47.25,19.75,46.42,29.97,46.25,38.86","DG":"M16.62,7.63C46.87,-0.86,107.55,-5.56,62.43,28.52C2.44,73.82,16.15,80.63,28.79,76.64C31.97,75.63,48.24,71.06,54.7,69.72"},"34":{"GS":"M103.07,7.35C94.87,12.69,78.1,24.36,74.69,26.7C56.85,38.96,37.5,54.05,62.23,51.68C81.96,49.79,72.46,60.58,48.61,75.24C11.09,98.32,19.65,105.81,23.47,107.18","D":"M34.56,9.68C33.83,16.35,34.29,32.43,34.12,41.31","DG":"M3.7,5C116.02,-9.34,72.62,22.9,21.09,56.4C-14.27,79.39,7.81,79.65,13.98,78.36C16.93,77.75,41.07,71.36,48.37,69.1"},"35":{"GS":"M100.76,18.12C94.38,26.6,87.52,30.8,84.11,33.14C66.27,45.4,38.71,69.23,59.68,64.26C73.38,61.01,61.59,75.25,38.33,91.94C12.1,110.76,13.96,114.28,16.44,116.91","D":"M37.45,10.18C36.44,18.24,28.35,44.16,36.69,30.25","DG":"M4.37,14.11C29.38,1.27,125.52,-14.39,55.92,38.04C6.54,75.24,-18.51,95.09,20.97,86.09C27.81,84.53,39.36,80.33,52.4,77.67"},"36":{"GS":"M101.83,14.62C94.24,18.99,84.62,23.43,81.26,25.84C63.5,38.59,46.74,50.33,57.89,52.1C71.36,54.24,57.02,60.51,33.3,76.54C-5.56,102.79,-1.83,105.6,8.26,104.61","D":"M48.17,10.51C45.74,12.48,39.67,21.44,47.11,31.76","DG":"M25.55,6.31C79.44,-5.13,96.44,3.36,45.27,36.6C10.63,59.1,0.97,78.2,14.98,79.1C17.83,79.28,20.47,77.88,26.57,75.85"},"37":{"GS":"M102.21,8.66C94.62,15.07,84.09,21.73,80.43,23.66C64.26,32.19,41.87,47.09,64.08,45.94C95.3,44.33,81.29,54.95,63.91,62.98C23.57,81.62,23.32,85.73,25.61,90.82","D":"M33.71,11.87C33.2,27.22,28.48,33.46,29.49,44.09","DG":"M24.77,1.41C39.59,6.78,110.51,-9.65,60.39,24.73C38.1,40.03,-33.37,87.26,22.19,72.6C31.52,70.14,37.92,68.78,49.07,66.7"},"38":{"GS":"M101.69,17.81C103.88,6.85,90.42,19.46,78.39,28.31C64.17,38.77,44.79,57.79,65.76,58.99C92.86,60.54,59.54,76.92,53.22,79.93C12.05,99.58,17.62,111.73,21.79,116.25","D":"M43.53,17.13C39.67,22.45,34.34,30.9,34.35,41.37","DG":"M27.39,4.55C74.59,-4.56,97.88,5.74,31.78,49.07C21.05,56.11,-23.12,99.56,20.11,88.25C25.07,86.95,28.14,85.65,32.77,84.45"}},"sample_order":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38],"n_seeds":38,"n_components":37}</script>
+<script>
+const DATA = JSON.parse(document.getElementById('data').textContent);
+const VB = DATA.viewbox.join(' ');
+const PIDS = ['GS','D','DG'];
+
+/* ---------- mark rendering ---------- */
+function pathEls(dmap, stroke, sw){
+  return PIDS.map(p=>`<path d="${dmap[p]}" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"/>`).join('');
+}
+function mark(dmap, {stroke='#221f1d', sw=3.4, draw=false}={}){
+  const cls = draw ? ' class="draw"' : '';
+  const pl = draw ? ' pathLength="100"' : '';
+  const paths = PIDS.map(p=>`<path${pl} d="${dmap[p]}" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"/>`).join('');
+  return `<svg viewBox="${VB}"${cls}>${paths}</svg>`;
+}
+
+/* ---------- path interpolation ---------- */
+function tok(d){
+  const re=/([MmLlCcSsQqZz])|(-?\d*\.?\d+(?:e-?\d+)?)/g, out=[]; let m;
+  while((m=re.exec(d))){ out.push(m[1]!==undefined?{c:m[1]}:{n:parseFloat(m[2])}); }
+  return out;
+}
+function fmt(v){ return (Math.round(v*100)/100).toString(); }
+function dLerp(a,b,t){
+  const ta=tok(a), tb=tok(b); let out='';
+  for(let i=0;i<ta.length;i++){
+    if(ta[i].c!==undefined){ out+=ta[i].c; }
+    else{ const v=ta[i].n+(tb[i].n-ta[i].n)*t; out+=(/[0-9.]$/.test(out)?',':'')+fmt(v); }
+  }
+  return out;
+}
+function mapLerp(A,B,t){ const o={}; for(const p of PIDS) o[p]=dLerp(A[p],B[p],t); return o; }
+
+/* color ramp blue -> grey -> red */
+function ramp(t){ // t in 0..1
+  const lo=[55,98,143], mid=[150,142,130], hi=[187,59,43];
+  const l=(a,b,u)=>Math.round(a+(b-a)*u);
+  let c; if(t<.5){const u=t/.5;c=[l(lo[0],mid[0],u),l(lo[1],mid[1],u),l(lo[2],mid[2],u)];}
+  else{const u=(t-.5)/.5;c=[l(mid[0],hi[0],u),l(mid[1],hi[1],u),l(mid[2],hi[2],u)];}
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+/* ---------- hero + feature + footer ---------- */
+document.getElementById('hero-mark').innerHTML   = mark(DATA.mean,{sw:3.2,draw:true});
+document.getElementById('feature-mark').innerHTML= mark(DATA.samples[12]||DATA.mean,{sw:3.6});
+document.getElementById('foot-mark').innerHTML   = mark(DATA.mean,{sw:3.6,stroke:'#b0561f'});
+
+/* ---------- samples wall ---------- */
+(function(){
+  const wall=document.getElementById('wall');
+  wall.innerHTML = DATA.sample_order.map(n=>
+    `<div class="chip"><img src="assets/scans/${n}.png" alt="signature ${n}" loading="lazy"></div>`).join('');
+})();
+
+/* ---------- conversion strip ---------- */
+(function(){
+  const nums=[12,1,20,33];
+  const el=document.getElementById('convo');
+  el.innerHTML = nums.filter(n=>DATA.samples[n]).map(n=>`
+    <div class="pair">
+      <div class="cellwrap"><div class="cell"><img src="assets/scans/${n}.png" alt="scan ${n}"></div><span>ink scan</span></div>
+      <div class="arrow">→</div>
+      <div class="cellwrap"><div class="cell mark">${mark(DATA.samples[n],{sw:4})}</div><span>vector</span></div>
+    </div>`).join('');
+})();
+
+/* ---------- scree ---------- */
+(function(){
+  const N=12, sc=DATA.scree.slice(0,N), max=sc[0];
+  const bars=document.getElementById('scree'), xs=document.getElementById('scree-x');
+  bars.innerHTML = sc.map((v,i)=>`<div class="bar" data-h="${(v/max*100).toFixed(1)}" style="height:2px">${i<3?`<span>${(v*100).toFixed(0)}%</span>`:''}</div>`).join('');
+  xs.innerHTML = sc.map((v,i)=>`<div>${i+1}</div>`).join('');
+})();
+
+const PCS = DATA.pcs;
+
+/* ---------- overlay strips ---------- */
+(function(){
+  const el=document.getElementById('overlays');
+  el.innerHTML = PCS.map((pc,i)=>{
+    const layers = pc.steps.map((s,si)=>{
+      const t=si/(pc.steps.length-1);
+      const w = Math.abs(s.z)<0.01?4.4:2.6;
+      return `<g opacity="${Math.abs(s.z)<0.01?1:0.85}">${pathEls(s.d,ramp(t),w)}</g>`;
+    }).join('');
+    return `<div class="ov">
+      <div class="mark"><svg viewBox="${VB}">${layers}</svg></div>
+      <h4>Eigenvector ${i+1}</h4><p>${(pc.var*100).toFixed(0)}% of the variation</p></div>`;
+  }).join('');
+})();
+
+/* ---------- morph pad ---------- */
+(function(){
+  const grid=DATA.morph.grid, zmax=DATA.morph.zmax, G=grid.length;
+  const tiles=document.getElementById('pad-tiles');
+  let html='';
+  for(let iy=0;iy<G;iy++) for(let ix=0;ix<G;ix++){
+    html+=`<div class="mark">${mark(grid[iy][ix],{sw:5,stroke:'#8a8175'})}</div>`;
+  }
+  tiles.innerHTML=html;
+  const live=document.getElementById('morph-live'), cross=document.getElementById('pad-cross'), pad=document.getElementById('pad');
+  function sample(zx,zy){ // zx,zy in -zmax..zmax
+    const fx=(zx+zmax)/(2*zmax)*(G-1), fy=(zmax-zy)/(2*zmax)*(G-1);
+    let ix=Math.max(0,Math.min(G-2,Math.floor(fx))), iy=Math.max(0,Math.min(G-2,Math.floor(fy)));
+    const tx=fx-ix, ty=fy-iy;
+    const top=mapLerp(grid[iy][ix],grid[iy][ix+1],tx);
+    const bot=mapLerp(grid[iy+1][ix],grid[iy+1][ix+1],tx);
+    return mapLerp(top,bot,ty);
+  }
+  function update(zx,zy){
+    live.innerHTML=mark(sample(zx,zy),{sw:3.8});
+    cross.style.left=((zx+zmax)/(2*zmax)*100)+'%';
+    cross.style.top=((zmax-zy)/(2*zmax)*100)+'%';
+  }
+  function fromEvent(e){
+    const r=pad.getBoundingClientRect();
+    const px=(e.touches?e.touches[0].clientX:e.clientX)-r.left;
+    const py=(e.touches?e.touches[0].clientY:e.clientY)-r.top;
+    const zx=(Math.max(0,Math.min(r.width,px))/r.width*2-1)*zmax;
+    const zy=(1-Math.max(0,Math.min(r.height,py))/r.height*2)*zmax;
+    update(zx,zy);
+  }
+  let drag=false;
+  pad.addEventListener('pointerdown',e=>{drag=true;fromEvent(e);pad.setPointerCapture(e.pointerId);});
+  pad.addEventListener('pointermove',e=>{if(drag)fromEvent(e);});
+  pad.addEventListener('pointerup',()=>drag=false);
+  pad.addEventListener('pointerleave',()=>drag=false);
+  update(0,0);
+})();
+
+/* ---------- comparer ---------- */
+(function(){
+  const nums=DATA.sample_order.slice();
+  let votes=0, a,b;
+  const A=document.getElementById('cand-a'), B=document.getElementById('cand-b');
+  function pick(arr){return arr[Math.floor(Math.random()*arr.length)];}
+  function newPair(){
+    a=pick(nums); do{b=pick(nums);}while(b===a);
+    A.querySelector('.mark').innerHTML=mark(DATA.samples[a],{sw:3.8});
+    B.querySelector('.mark').innerHTML=mark(DATA.samples[b],{sw:3.8});
+    A.classList.remove('pick');B.classList.remove('pick');
+  }
+  function vote(el){
+    el.classList.add('pick'); votes++;
+    document.getElementById('tally').innerHTML=`You've cast <b>${votes}</b> vote${votes===1?'':'s'}.`;
+    setTimeout(newPair,340);
+  }
+  A.addEventListener('click',()=>vote(A));
+  B.addEventListener('click',()=>vote(B));
+  newPair();
+})();
+
+/* ---------- reveal on scroll + scree grow ---------- */
+const io=new IntersectionObserver((es)=>{
+  es.forEach(e=>{ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target);
+    if(e.target.id==='scree'||e.target.querySelector&&e.target.querySelector('#scree')){}
+  }});
+},{threshold:.15});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+// grow scree bars when visible
+const screeIO=new IntersectionObserver((es)=>{
+  es.forEach(e=>{ if(e.isIntersecting){
+    e.target.querySelectorAll('.bar').forEach((b,i)=>setTimeout(()=>{b.style.height=b.dataset.h+'%';},i*55));
+    screeIO.unobserve(e.target);
+  }});
+},{threshold:.4});
+screeIO.observe(document.getElementById('scree'));
+</script>
+</body>
+</html>

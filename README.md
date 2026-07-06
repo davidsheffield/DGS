@@ -360,5 +360,5 @@ The constants near the top of `server.py` are the only knobs:
 
 ## License
 
-Copyright (c) 2026 David G. Sheffield. All rights reserved.
+Copyright (c) 2026 David G Sheffield. All rights reserved.
 See [`LICENSE`](LICENSE) for the full terms.
