@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>A Maker's Mark — the geometry of a signature</title>
+<title>David G Sheffield's maker's mark</title>
 <meta name="description" content="The DS maker's mark: from a hand-drawn signature to an eigenvector decomposition and a preference-learning comparer.">
 <style>
   :root{
@@ -95,11 +95,14 @@
 
   /* ---- samples wall ---- */
   .wall{display:grid;grid-template-columns:repeat(auto-fill,minmax(76px,1fr));gap:10px;margin-top:40px}
-  .wall .chip{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:8px;
-    aspect-ratio:1;display:flex;align-items:center;justify-content:center;
+  .wall .chip{background:var(--panel);border:1px solid var(--line);border-radius:9px;
+    aspect-ratio:1;position:relative;overflow:hidden;
     transition:transform .35s ease,box-shadow .35s ease}
   .wall .chip:hover{transform:translateY(-4px) rotate(-1deg);box-shadow:0 14px 26px -16px rgba(34,31,29,.55)}
-  .wall .chip img{max-width:100%;max-height:100%;mix-blend-mode:multiply;filter:contrast(1.05)}
+  .wall .chip .scan{position:absolute;inset:8px;margin:auto;max-width:calc(100% - 16px);max-height:calc(100% - 16px);
+    object-fit:contain;mix-blend-mode:multiply;filter:contrast(1.05)}
+  .wall .chip .vec{position:absolute;inset:8px}
+  .wall .chip .vec svg{width:100%;height:100%}
 
   /* ---- conversion strip ---- */
   .convo{display:flex;flex-wrap:wrap;gap:18px;margin-top:40px;justify-content:center}
@@ -157,10 +160,31 @@
   footer .mark{width:78px;aspect-ratio:110/124;margin:0 auto 22px}
   footer p{font-size:.92rem}
 
+  /* ---- full-page scan ---- */
+  .scanpage{margin-top:40px}
+  .scanpage img{width:100%;border-radius:12px;border:1px solid var(--line);
+    box-shadow:0 22px 48px -30px rgba(34,31,29,.6);display:block}
+
+  /* ---- control-point anatomy ---- */
+  .anatomy{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,320px);gap:44px;
+    align-items:center;margin-top:40px}
+  .anatomy .plate{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:22px}
+  .anatomy .plate .mark{aspect-ratio:110/124}
+  .cp-legend .row{display:flex;align-items:center;gap:12px;font-size:.88rem;color:var(--ink-soft);margin-bottom:12px}
+  .cp-legend .row svg{flex:none}
+  .numbreak{display:flex;gap:14px;flex-wrap:wrap;margin-top:6px}
+  .numbreak .n{flex:1;min-width:82px;background:var(--panel);border:1px solid var(--line);
+    border-radius:10px;padding:12px 14px}
+  .numbreak .n b{font-family:var(--serif);font-size:1.5rem;color:var(--rust-deep);display:block;line-height:1}
+  .numbreak .n span{font-size:.72rem;color:var(--ink-soft);letter-spacing:.02em}
+
+  /* ---- monogram decomposition ---- */
+  .decomp-img{display:block;width:100%;height:auto}
+
   @media(max-width:820px){
     body{font-size:17px}
     section{padding:72px 0}
-    .mark-feature,.morph{grid-template-columns:1fr;gap:30px}
+    .mark-feature,.morph,.anatomy{grid-template-columns:1fr;gap:30px}
     .morph .live{max-width:240px;margin:0 auto}
     .photos{grid-template-columns:1fr}
     .photos img{height:300px}
@@ -174,23 +198,23 @@
 <!-- HERO -->
 <header class="hero">
   <div class="mark mark-hero" id="hero-mark"></div>
-  <p class="eyebrow" style="margin-top:20px">My Maker's Mark</p>
-  <h1>A signature<br>of my work</h1>
-  <p class="sub">The mark I add to objects I make and the tool to find the versions of it I like best.</p>
-  <div class="scrollcue">Scroll ↓</div>
+  <!-- <p class="eyebrow" style="margin-top:20px">My Maker's Mark</p> -->
+  <h1>David G Sheffield's<br>maker's mark</h1>
+  <p class="sub">And the tool I used to find the shape of it that I like best.</p>
+  <!-- <div class="scrollcue">Scroll ↓</div> -->
 </header>
 
 <!-- THE MARK -->
 <section id="mark">
   <div class="wrap mark-feature">
     <div class="plate reveal">
-      <div class="mark" id="feature-mark"></div>
+      <img src="assets/decomposed.svg" alt="The DGS monogram decomposed into its three letters: the D, the G and the S" class="mark decomp-img">
     </div>
     <div class="reveal">
       <p class="eyebrow">The mark</p>
-      <h2 style="font-size:clamp(1.8rem,4vw,2.6rem);margin-bottom:.5em">A monogram in three strokes</h2>
-      <p>My initials with the three letters—<b>D</b>, <b>G</b>, <b>S</b>—intertwined into one symbol based on my handwriting.</p>
-      <p class="muted">But I never write is quite the same way twice. Sometimes I like it more and other times less. I wanted a standardize form that I can use as a template.</p>
+      <h2 style="font-size:clamp(1.8rem,4vw,2.6rem);margin-bottom:.5em">My monogram</h2>
+      <p>My initials—DGS—with the letters intertwined into one symbol based on my handwriting.</p>
+      <p class="muted">But I never write is quite the same way twice. Sometimes I like the way it looks more and other times less. I wanted a standardize form that I can use as a template.</p>
       <div class="stroke-facts">
       </div>
     </div>
@@ -201,7 +225,7 @@
 <section id="use">
   <div class="wrap narrow reveal">
     <p class="eyebrow">Where it lives</p>
-    <h2 style="font-size:clamp(1.8rem,4vw,2.6rem);margin-bottom:.5em">I put it on the things I make</h2>
+    <h2 style="font-size:clamp(1.8rem,4vw,2.6rem);margin-bottom:.5em">Objects I make</h2>
     <p class="lede">I engrave, carve, embroider, etch, or stamp it onto objects I make along with the year. That way I can see when I made it.</p>
   </div>
   <div class="wrap photos reveal">
@@ -227,13 +251,23 @@
     <p>To study the mark, I wrote it hundreds of times. I chose the few I liked—38 versions of the monogram. I scanned the pages in, created high contrast images of the marks I liked, and traced each one into the same three Bézier paths—the same strokes and control points, only with differing positions. That skeleton makes the samples comparable: every mark becomes the same 49 numbers, just with different values.</p>
   </div>
 
-  <div class="wrap reveal">
+  <figure class="wrap scanpage reveal">
+    <img src="assets/full_scan.jpg" alt="A notebook page filled with dozens of hand-drawn versions of the DGS monogram" loading="lazy">
+    <figcaption class="muted" style="text-align:center;font-size:.9rem;margin-top:.7rem;font-style:italic">A page of monograms with the best samples highlighted.</figcaption>
+  </figure>
+
+  <div class="wrap narrow reveal" style="margin-top:64px">
+    <div class="plate" style="background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:22px;max-width:380px;margin:0 auto"><div class="mark" id="anatomy-mark"></div></div>
+    <p class="muted" style="text-align:center;font-size:.9rem;margin-top:20px">Three cubic Bézier curves with control points.</p>
+  </div>
+
+  <div class="wrap reveal" style="margin-top:64px">
     <div class="convo" id="convo"></div>
     <p class="muted" style="text-align:center;font-size:.9rem;margin-top:20px">Each ink scan (left) traced to a clean vector (right). Same topology every time.</p>
   </div>
 
-  <div class="wrap reveal" style="margin-top:20px">
-    <p class="muted" style="text-align:center;font-size:.9rem;margin-bottom:0">The full set — thirty-eight times my hand tried to draw the same two letters:</p>
+  <div class="wrap reveal" style="margin-top:40px">
+    <!-- <p class="muted" style="text-align:center;font-size:.9rem;margin-bottom:0">The full set</p> -->
     <div class="wall" id="wall"></div>
   </div>
 </section>
@@ -347,14 +381,38 @@ function ramp(t){ // t in 0..1
 
 /* ---------- hero + feature + footer ---------- */
 document.getElementById('hero-mark').innerHTML   = mark(DATA.mean,{sw:3.2,draw:true});
-document.getElementById('feature-mark').innerHTML= mark(DATA.samples[12]||DATA.mean,{sw:3.6});
 document.getElementById('foot-mark').innerHTML   = mark(DATA.mean,{sw:3.6,stroke:'#b0561f'});
 
-/* ---------- samples wall ---------- */
+/* ---------- samples wall (scan -> vector on scroll) ---------- */
 (function(){
   const wall=document.getElementById('wall');
   wall.innerHTML = DATA.sample_order.map(n=>
-    `<div class="chip"><img src="assets/scans/${n}.png" alt="signature ${n}" loading="lazy"></div>`).join('');
+    `<div class="chip">`+
+      `<img class="scan" src="assets/scans/${n}.png" alt="signature ${n}" loading="lazy">`+
+      `<div class="vec">${DATA.samples[n]?mark(DATA.samples[n],{sw:5}):''}</div>`+
+    `</div>`).join('');
+  const chips=[...wall.querySelectorAll('.chip')], N=chips.length;
+  let ticking=false;
+  function paint(){
+    ticking=false;
+    const r=wall.getBoundingClientRect();
+    const vh=window.innerHeight||document.documentElement.clientHeight;
+    const start=vh*0.9, end=vh*0.1;
+    const prog=Math.max(0,Math.min(1,(start-r.top)/(start-end+r.height)));
+    // hold the ink scans through the first stretch, then crossfade quickly;
+    // T_START = when the fade begins, SPREAD = per-chip stagger, DUR = fade length
+    const T_START=0.38, SPREAD=0.12, DUR=0.12;
+    for(let i=0;i<N;i++){
+      const f=i/Math.max(1,N-1);
+      const local=Math.max(0,Math.min(1,(prog-(T_START+f*SPREAD))/DUR));
+      chips[i].querySelector('.vec').style.opacity=local;
+      chips[i].querySelector('.scan').style.opacity=1-local;
+    }
+  }
+  function onScroll(){ if(!ticking){ ticking=true; requestAnimationFrame(paint); } }
+  paint();
+  window.addEventListener('scroll',onScroll,{passive:true});
+  window.addEventListener('resize',onScroll);
 })();
 
 /* ---------- conversion strip ---------- */
@@ -367,6 +425,30 @@ document.getElementById('foot-mark').innerHTML   = mark(DATA.mean,{sw:3.6,stroke
       <div class="arrow">→</div>
       <div class="cellwrap"><div class="cell mark">${mark(DATA.samples[n],{sw:4})}</div><span>vector</span></div>
     </div>`).join('');
+})();
+
+/* ---------- control-point anatomy ---------- */
+(function(){
+  const dmap = DATA.samples[12] || DATA.mean;
+  let arms='', ctrl='', nodes='';
+  for(const p of PIDS){
+    const t=tok(dmap[p]).filter(x=>x.n!==undefined).map(x=>x.n);
+    const pts=[]; for(let i=0;i+1<t.length;i+=2) pts.push([t[i],t[i+1]]);
+    const on=[pts[0]], handles=[]; let i=1;
+    while(i+2 < pts.length){
+      const c1=pts[i], c2=pts[i+1], end=pts[i+2];
+      handles.push([on[on.length-1],c1]);
+      handles.push([end,c2]);
+      on.push(end); i+=3;
+    }
+    for(const [a,b] of handles){
+      arms+=`<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="#b0561f" stroke-width="0.55" opacity="0.65"/>`;
+      ctrl+=`<circle cx="${b[0]}" cy="${b[1]}" r="1.7" fill="#faf6ec" stroke="#b0561f" stroke-width="0.7"/>`;
+    }
+    for(const nd of on) nodes+=`<circle cx="${nd[0]}" cy="${nd[1]}" r="2" fill="#37628f"/>`;
+  }
+  document.getElementById('anatomy-mark').innerHTML =
+    `<svg viewBox="${VB}">${pathEls(dmap,'#221f1d',1.5)}${arms}${ctrl}${nodes}</svg>`;
 })();
 
 /* ---------- scree ---------- */
